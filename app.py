@@ -1037,6 +1037,22 @@ def _is_blank_method(x) -> bool:
 def _passes_through(nodes_steps, node_code: str) -> bool:
     return any((l.get("from") == node_code or l.get("to") == node_code) for l in (nodes_steps or []))
 
+def _first_touch_index(nodes_steps, node_code: str):
+    """Return the first leg index where node_code is touched as from/to; None if absent."""
+    for i, l in enumerate(nodes_steps or []):
+        if l.get("from") == node_code or l.get("to") == node_code:
+            return i
+    return None
+
+def _touches_before(nodes_steps, first: str, later_nodes: tuple[str, ...]) -> bool:
+    """True if `first` appears in the path before any of `later_nodes`."""
+    i_first = _first_touch_index(nodes_steps, first)
+    if i_first is None:
+        return False
+    idxs = [_first_touch_index(nodes_steps, n) for n in later_nodes]
+    idxs = [i for i in idxs if i is not None]
+    return bool(idxs) and i_first < min(idxs)
+
 # First pass: normal routing
 eta, steps = earliest_arrival(
     origin_node,
@@ -1046,8 +1062,9 @@ eta, steps = earliest_arrival(
     transfer_sec=MIN_TRANSFER_SECONDS,
 )
 
-# If the normal route enters BR60/BR83 handling, enforce the BR30→BR34 (LM) gateway.
-if origin_node == "BR30" and steps and (_passes_through(steps, "BR60") or _passes_through(steps, "BR83")):
+# If the normal route routes freight THROUGH BR30 and then into the BR60/BR83 network,
+# enforce the BR30→BR34 (LM) gateway (blocks BR30→BR51 night truck for those paths).
+if steps and any(l.get("from") == "BR30" for l in steps) and _touches_before(steps, "BR30", ("BR60", "BR83")):
     gateway_stop = BR30_BR60_GATEWAY_STOP        # BR34
     gateway_method = BR30_BR60_GATEWAY_METHOD    # LM
 
