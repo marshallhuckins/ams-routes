@@ -499,11 +499,16 @@ def read_all_connections(xlsx_path):
                     for i in range(legs):
                         a = rows[i]
                         b = rows[i+1]
-                        dep_s = int(round(dep0 + i * segment))
-                        arr_s = int(round(dep0 + (i + 1) * segment))
-                        # Reduce back into [0, 24h) for storage; expand_connections will add +1 day if needed
-                        dep_s_mod = dep_s % (24 * 3600)
-                        arr_s_mod = arr_s % (24 * 3600)
+                        dep_s_raw = int(round(dep0 + i * segment))
+                        arr_s_raw = int(round(dep0 + (i + 1) * segment))
+
+                        # Preserve whether this segment occurs after midnight by storing day offsets.
+                        dep_day_offset = dep_s_raw // (24 * 3600)
+                        arr_day_offset = arr_s_raw // (24 * 3600)
+
+                        # Store seconds-of-day (0..86399) plus the day offsets.
+                        dep_s_mod = dep_s_raw % (24 * 3600)
+                        arr_s_mod = arr_s_raw % (24 * 3600)
                         if not a["days_set"]:
                             continue
                         connections.append({
@@ -512,6 +517,8 @@ def read_all_connections(xlsx_path):
                             "to":   route_node(b["Stop_ID"]),
                             "dep_s": dep_s_mod,
                             "arr_s": arr_s_mod,
+                            "dep_day_offset": int(dep_day_offset),
+                            "arr_day_offset": int(arr_day_offset),
                             "days":  set(a["days_set"]),
                             "method": str(a.get("Method") or "").strip().upper(),
                         })
@@ -534,6 +541,8 @@ def read_all_connections(xlsx_path):
                     "to":   route_node(b["Stop_ID"]),
                     "dep_s": int(a["dep_s"]),
                     "arr_s": int(b["arr_s"]),
+                    "dep_day_offset": 0,
+                    "arr_day_offset": 0,
                     "days":  set(a["days_set"]),
                     "method": str(a.get("Method") or "").strip().upper(),
                 })
@@ -586,10 +595,11 @@ def expand_connections(conns, start_dt_local):
         wd = weekday_num(d)
         for c in conns:
             if wd in c["days"]:
-                dep_abs = d + timedelta(seconds=c["dep_s"])
-                arr_abs = d + timedelta(seconds=c["arr_s"])
-                # If arrival time numerically < dep time, assume it arrives after midnight next day
-                if c["arr_s"] < c["dep_s"]:
+                dep_abs = d + timedelta(days=int(c.get("dep_day_offset", 0)), seconds=c["dep_s"])
+                arr_abs = d + timedelta(days=int(c.get("arr_day_offset", 0)), seconds=c["arr_s"])
+
+                # Safety for non-offset legs that cross midnight
+                if arr_abs < dep_abs:
                     arr_abs += timedelta(days=1)
                 out.append({
                     "trip_id": c["trip_id"],
