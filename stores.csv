@@ -1,81 +1,80 @@
-branch_id,name,tz
-BR01,Spencer,America/Chicago
-BR02,Marshall,America/Chicago
-BR03,Sheldon,America/Chicago
-BR04,Algona,America/Chicago
-BR05,Mason City,America/Chicago
-BR06,Fairmont,America/Chicago
-BR07,Carroll,America/Chicago
-BR08,Boone,America/Chicago
-BR09,Oelwein,America/Chicago
-BR10,Marshalltown,America/Chicago
-BR11,Oskaloosa,America/Chicago
-BR12,Storm Lake,America/Chicago
-BR13,Ames,America/Chicago
-BR14,Fort Dodge,America/Chicago
-BR15,Ankeny,America/Chicago
-BR16,Fairfield,America/Chicago
-BR17,Washington,America/Chicago
-BR18,Worthington,America/Chicago
-BR19,LeMars,America/Chicago
-BR21,Adel,America/Chicago
-BR22,Sioux Center,America/Chicago
-BR23,Garner,America/Chicago
-BR24,Milford,America/Chicago
-BR26,Webster City,America/Chicago
-BR27,Humboldt,America/Chicago
-BR28,Orange City,America/Chicago
-BR29,Charles City,America/Chicago
-BR30,The Merrill Company,America/Chicago
-BR32,Waterloo,America/Chicago
-BR33,Grinnell,America/Chicago
-BR34,Sioux City,America/Chicago
-BR35,Eagle Grove,America/Chicago
-BR36,Clarion,America/Chicago
-BR37,Pella,America/Chicago
-BR38,Marion,America/Chicago
-BR39,Muscatine,America/Chicago
-BR40,AMS Machine Shop,America/Chicago
-BR41,Wilton,America/Chicago
-BR43,Auto Refinish Solutions,America/Chicago
-BR44,ARS- Equip,America/Chicago
-BR45,Vinton,America/Chicago
-BR46,BR46,America/Chicago
-BR47,Iowa City,America/Chicago
-BR48,Northern Auto Parts,America/Chicago
-BR49,Williamsburg,America/Chicago
-BR50,Moline,America/Chicago
-BR51,Urbandale,America/Chicago
-BR52,Cedar Rapids,America/Chicago
-BR54,Manchester,America/Chicago
-BR55,Anamosa,America/Chicago
-BR56,Maquoketa,America/Chicago
-BR57,Decorah,America/Chicago
-BR58,Sigourney,America/Chicago
-BR60,Specialty Sales ,America/Chicago
-BR61,APW Omaha,America/Chicago
-BR62,Council Bluffs,America/Chicago
-BR63,Cornhusker,America/Chicago
-BR64,Bellevue,America/Chicago
-BR65,Glenwood,America/Chicago
-BR66,Lincoln,America/Chicago
-BR67,Geneva,America/Chicago
-BR68,Humphrey,America/Chicago
-BR69,Fairbury,America/Chicago
-BR70,Hastings,America/Chicago
-BR71,Albany,America/Chicago
-BR73,West Point,America/Chicago
-BR74,Creston,America/Chicago
-BR76,Kearney,America/Chicago
-BR77,Grand Island,America/Chicago
-BR78,Columbus,America/Chicago
-BR79,Albion,America/Chicago
-BR80,ARS - Rock Island,America/Chicago
-BR81,Denison,America/Chicago
-BR82,Atlantic,America/Chicago
-BR83,GI DC,America/Chicago
-BR84,McCook,America/Chicago
-BR85,York,America/Chicago
-BR91,IPS-Spencer,America/Chicago
-BR92,IPS-Omaha,America/Chicago
-BR93,IPS-Rock Islnd,America/Chicago
+branch_id,name,Close_MF,Close_Sat,Sat_Closed,tz
+BR01,Spencer,17:30,13:00,FALSE,America/Chicago
+BR02,Marshall,17:30,13:00,FALSE,America/Chicago
+BR03,Sheldon,17:30,12:00,FALSE,America/Chicago
+BR04,Algona,17:30,13:00,FALSE,America/Chicago
+BR05,Mason City,17:30,12:00,FALSE,America/Chicago
+BR06,Fairmont,17:30,13:00,FALSE,America/Chicago
+BR07,Carroll,17:30,13:00,FALSE,America/Chicago
+BR08,Boone,18:00,13:00,FALSE,America/Chicago
+BR09,Oelwein,17:30,13:00,FALSE,America/Chicago
+BR10,Marshalltown,18:00,16:00,FALSE,America/Chicago
+BR11,Oskaloosa,17:30,12:00,FALSE,America/Chicago
+BR12,Storm Lake,17:30,13:00,FALSE,America/Chicago
+BR13,Ames,18:00,16:00,FALSE,America/Chicago
+BR14,Fort Dodge,17:30,12:00,FALSE,America/Chicago
+BR15,Ankeny,17:30,13:00,FALSE,America/Chicago
+BR16,Fairfield,17:30,13:00,FALSE,America/Chicago
+BR17,Washington,17:30,13:00,FALSE,America/Chicago
+BR18,Worthington,17:30,13:00,FALSE,America/Chicago
+BR19,LeMars,17:30,13:00,FALSE,America/Chicago
+BR21,Adel,17:30,13:00,FALSE,America/Chicago
+BR22,Sioux Center,17:30,12:00,FALSE,America/Chicago
+BR23,Garner,17:30,12:00,FALSE,America/Chicago
+BR24,Milford,17:30,13:00,FALSE,America/Chicago
+BR26,Webster City,17:30,13:00,FALSE,America/Chicago
+BR27,Humboldt,17:30,12:00,FALSE,America/Chicago
+BR28,Orange City,17:30,12:00,FALSE,America/Chicago
+BR29,Charles City,17:00,12:00,FALSE,America/Chicago
+BR30,The Merrill Company,17:30,,TRUE,America/Chicago
+BR32,Waterloo,17:30,12:00,FALSE,America/Chicago
+BR33,Grinnell,17:30,13:00,FALSE,America/Chicago
+BR34,Sioux City,17:30,12:00,FALSE,America/Chicago
+BR35,Eagle Grove,17:30,12:00,FALSE,America/Chicago
+BR36,Clarion,17:30,12:00,FALSE,America/Chicago
+BR37,Pella,17:30,12:00,FALSE,America/Chicago
+BR38,Marion,17:30,12:00,FALSE,America/Chicago
+BR39,Muscatine,17:30,13:00,FALSE,America/Chicago
+BR40,AMS Machine Shop,17:30,,TRUE,America/Chicago
+BR41,Wilton,17:30,12:00,FALSE,America/Chicago
+BR43,Auto Refinish Solutions,17:30,,TRUE,America/Chicago
+BR44,ARS- Equip,17:30,,TRUE,America/Chicago
+BR45,Vinton,17:30,13:00,FALSE,America/Chicago
+BR47,Iowa City,17:30,13:00,FALSE,America/Chicago
+BR48,Northern Auto Parts,17:30,,TRUE,America/Chicago
+BR49,Williamsburg,17:30,13:00,FALSE,America/Chicago
+BR50,Moline,17:30,13:00,FALSE,America/Chicago
+BR51,Urbandale,17:30,13:00,FALSE,America/Chicago
+BR52,Cedar Rapids,17:30,13:00,FALSE,America/Chicago
+BR54,Manchester,17:30,12:00,FALSE,America/Chicago
+BR55,Anamosa,,,,America/Chicago
+BR56,Maquoketa,,,,America/Chicago
+BR57,Decorah,17:00,,TRUE,America/Chicago
+BR58,Sigourney,17:00,,TRUE,America/Chicago
+BR60,Specialty Sales ,17:30,,TRUE,America/Chicago
+BR61,APW Omaha,17:30,13:00,FALSE,America/Chicago
+BR62,Council Bluffs,17:30,13:00,FALSE,America/Chicago
+BR63,Cornhusker,17:30,13:00,FALSE,America/Chicago
+BR64,Bellevue,17:30,13:00,FALSE,America/Chicago
+BR65,Glenwood,17:30,13:00,FALSE,America/Chicago
+BR66,Lincoln,18:00,15:00,FALSE,America/Chicago
+BR67,Geneva,17:30,12:00,FALSE,America/Chicago
+BR68,Humphrey,17:30,12:30,FALSE,America/Chicago
+BR69,Fairbury,17:30,12:00,FALSE,America/Chicago
+BR70,Hastings,17:30,12:00,FALSE,America/Chicago
+BR71,Albany,17:00,12:00,FALSE,America/Chicago
+BR73,West Point,17:30,13:00,FALSE,America/Chicago
+BR74,Creston,17:30,13:00,FALSE,America/Chicago
+BR76,Kearney,17:30,12:00,FALSE,America/Chicago
+BR77,Grand Island,17:30,12:00,FALSE,America/Chicago
+BR78,Columbus,17:30,12:30,FALSE,America/Chicago
+BR79,Albion,17:30,12:30,FALSE,America/Chicago
+BR80,ARS - Rock Island,17:30,,TRUE,America/Chicago
+BR81,Denison,17:30,13:00,FALSE,America/Chicago
+BR82,Atlantic,17:30,13:00,FALSE,America/Chicago
+BR83,GI DC,17:30,,TRUE,America/Chicago
+BR84,McCook,17:30,12:00,FALSE,America/Chicago
+BR85,York,17:30,13:00,FALSE,America/Chicago
+BR91,IPS-Spencer,17:30,,TRUE,America/Chicago
+BR92,IPS-Omaha,17:30,,TRUE,America/Chicago
+BR93,IPS-Rock Islnd,17:30,,TRUE,America/Chicago

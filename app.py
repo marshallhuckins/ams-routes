@@ -33,9 +33,24 @@ ROUTE_NEXTDAY_MIN_DEP = {
     # add more pair-specific overrides as needed
 }
 
-# ---------- Helpers ----------
+DC_ORIGINS = {"BR60", "BR30", "BR83", "BR51"}  # set of branch codes that are DC origins
+DAY_METHODS = {"SM", "EM", "LM", "SHU"}        # methods treated as daytime runs that can hand off to NT after last departure
 
+# Branch equivalents: treat these codes as the same physical node for routing.
+# IMPORTANT: values must be canonicalized (no leading zeros): BR01 -> BR1
+# BR01 is an alias for BR30. canonical_br('BR01') => 'BR1', so map BR1 -> BR30.
+BR_EQUIV = {
+    "BR61": "BR60",
+    "BR1": "BR30",
+}
+
+# ---------- Helpers ----------
+def route_node(code: str) -> str:
+    """Map a user-selected code to the canonical routing node (handles equivalents)."""
+    code = canonical_br(code)
+    return canonical_br(BR_EQUIV.get(code, code))
 # --- Branch directory (code ↔ friendly name, plus search aliases) ---
+
 def _norm(s: str) -> str:
     """Normalize free-form user input / aliases for matching."""
     if s is None:
@@ -49,22 +64,109 @@ def _norm(s: str) -> str:
     s = "".join(ch for ch in s if ch.isalnum() or ch.isspace()).strip()
     return s
 
+# --- Canonicalize branch codes to "BR{int}" (e.g., BR03, 03, 3 -> BR3) ---
+def canonical_br(code) -> str:
+    """Convert codes like 'BR03', '03', 3 -> 'BR3' (no leading zeros)."""
+    if code is None:
+        return ""
+    # Handle pandas NA
+    try:
+        if pd.isna(code):
+            return ""
+    except Exception:
+        pass
+
+    s = str(code).strip().upper()
+    if not s:
+        return ""
+
+    # Extract digits from anything like BR03, BR 03, 03, etc.
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        # Fallback: return cleaned string
+        return s
+
+    return f"BR{int(digits)}"
+
+# Display helper for branch codes
+
+def display_br(code, width: int = 2) -> str:
+    """Display branch codes as BR01/BR02/etc while keeping internal codes as BR1/BR2."""
+    c = canonical_br(code)
+    if c.startswith("BR") and c[2:].isdigit():
+        return f"BR{int(c[2:]):0{width}d}"
+    return c
+
+
+# --- Store closing time parser ---
+def parse_clock_time(val):
+    """Parse a clock time from CSV cells. Accepts '17:30', '5:30 PM', datetime/time."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except Exception:
+        pass
+
+    # direct time-like types
+    try:
+        if isinstance(val, time):
+            return time(val.hour, val.minute)
+    except Exception:
+        pass
+
+    try:
+        if isinstance(val, (pd.Timestamp, datetime)):
+            t = val.time()
+            return time(t.hour, t.minute)
+    except Exception:
+        pass
+
+    s = str(val).strip()
+    if not s:
+        return None
+
+    import re
+    # 12-hour like 5:30 PM
+    m = re.match(r'^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$', s)
+    if m:
+        hh = int(m.group(1)); mm = int(m.group(2)); ap = m.group(3).upper()
+        if not (1 <= hh <= 12 and 0 <= mm <= 59):
+            return None
+        if ap == "PM" and hh != 12:
+            hh += 12
+        if ap == "AM" and hh == 12:
+            hh = 0
+        return time(hh, mm)
+
+    # 24-hour like 17:30
+    m = re.match(r'^(\d{1,2}):(\d{2})$', s)
+    if m:
+        hh = int(m.group(1)); mm = int(m.group(2))
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return time(hh, mm)
+
+    return None
+
 @st.cache_data(show_spinner=False)
 def load_stores(csv_path: str):
     """
     Returns:
       code_to_name: dict like {"BR60": "Sioux City (DC)"}
       alias_index: dict normalized_alias -> "BR60"
+      close_times: dict like {"BR60": {"mf": time(...), "sat": time(...)}, ...}
     The CSV can have flexible headers. Expected columns (any one from each group):
       - Code:  one of ["Code","Branch","Branch_ID","Stop_ID","Store","Store_ID","BR","br","StopId"]
-      - Name:  one of ["Name","Store_Name","Branch_Name","Location","City","Display","Friendly"]
+      - Name:  one of ["Name","Store_Name","Branch_Name","Location","City","Display","Friendly","Store Name"]
       - Number (optional if Code already has BRxx): one of ["Number","No","Branch_Number"]
+      - Close_MF, Close_Sat: optional closing times (see parse_clock_time)
     """
     try:
         df = pd.read_csv(csv_path)
     except Exception:
         # If not found, fall back to empty directory
-        return {}, {}
+        return {}, {}, {}
 
     # Header normalization
     remap = {c.lower().strip(): c for c in df.columns}
@@ -79,8 +181,13 @@ def load_stores(csv_path: str):
     col_name = _pick(["Name","Store_Name","Branch_Name","Location","City","Display","Friendly","Store Name"])
     col_num  = _pick(["Number","No","Branch_Number","Store_Number"])
 
+    # Optional close-time columns
+    col_close_mf  = _pick(["Close_MF", "Close", "Closing", "Closing_MF", "MF_Close", "Weekday_Close", "MonFri_Close"])
+    col_close_sat = _pick(["Close_Sat", "Sat_Close", "Saturday_Close", "Closing_Sat"])
+
     code_to_name: dict[str, str] = {}
     alias_index: dict[str, str] = {}
+    close_times = {}
 
     for _, row in df.iterrows():
         # Build canonical code like "BR60" (robust against spaces/hyphens like "BR 60" or numeric-only ids like "60")
@@ -100,6 +207,12 @@ def load_stores(csv_path: str):
 
         if not code:
             continue
+
+        # Optional close times
+        close_mf = parse_clock_time(row.get(col_close_mf)) if col_close_mf else None
+        close_sat = parse_clock_time(row.get(col_close_sat)) if col_close_sat else None
+        if close_mf or close_sat:
+            close_times[code] = {"mf": close_mf, "sat": close_sat}
 
         # Friendly name (fallback to code)
         name = name_raw if name_raw else code
@@ -129,7 +242,7 @@ def load_stores(csv_path: str):
             # Prefer the first-seen code for an alias; don't overwrite in case of duplicates
             alias_index.setdefault(na, code)
 
-    return code_to_name, alias_index
+    return code_to_name, alias_index, close_times
 
 def autocomplete_options(query: str,
                          alias_index: dict[str, str],
@@ -164,7 +277,7 @@ def autocomplete_options(query: str,
                 exact_code = cand
 
     if exact_code and exact_code in stops and (not exclude or exact_code != exclude):
-        label = f"{exact_code} — {code_to_name.get(exact_code, exact_code)}"
+        label = f"{display_br(exact_code)} — {code_to_name.get(exact_code, exact_code)}"
         return [(label, exact_code)]
 
     # Smart guess when user types digits or BRnn
@@ -180,7 +293,7 @@ def autocomplete_options(query: str,
     # 0) Put the smart guesses first if valid
     for g in guesses:
         if g in stops and (not exclude or g != exclude):
-            label = f"{g} — {code_to_name.get(g, g)}"
+            label = f"{display_br(g)} — {code_to_name.get(g, g)}"
             out.append((label, g))
             seen.add(g)
 
@@ -205,7 +318,7 @@ def autocomplete_options(query: str,
 
     # Build labels
     for code in ordered[: max(0, limit - len(out))]:
-        label = f"{code} — {code_to_name.get(code, code)}"
+        label = f"{display_br(code)} — {code_to_name.get(code, code)}"
         out.append((label, code))
 
     return out
@@ -287,6 +400,7 @@ def normalize_columns(df):
     col_dep  = _pick(["departure_time"]) or "Departure_Time"
     col_seq  = _pick(["sequence"]) or "Sequence"
     col_days = _pick(["days_active"]) or "Days_Active"
+    col_method = _pick(["method", "delivery_method", "method_code"]) or "Method"  # not required
 
     # Create a new DataFrame with canonical columns, filling missing ones with NA
     cols_map = {
@@ -296,6 +410,7 @@ def normalize_columns(df):
         "Departure_Time": col_dep,
         "Sequence": col_seq,
         "Days_Active": col_days,
+        "Method": col_method,
     }
 
     new_df = pd.DataFrame()
@@ -386,14 +501,15 @@ def read_all_connections(xlsx_path):
                             continue
                         connections.append({
                             "trip_id": trip_id,
-                            "from": str(a["Stop_ID"]).strip().upper(),
-                            "to":   str(b["Stop_ID"]).strip().upper(),
+                            "from": route_node(a["Stop_ID"]),
+                            "to":   route_node(b["Stop_ID"]),
                             "dep_s": dep_s_mod,
                             "arr_s": arr_s_mod,
                             "days":  set(a["days_set"]),
+                            "method": str(a.get("Method") or "").strip().upper(),
                         })
-                        all_stops.add(str(a["Stop_ID"]).strip().upper())
-                        all_stops.add(str(b["Stop_ID"]).strip().upper())
+                        all_stops.add(route_node(a["Stop_ID"]))
+                        all_stops.add(route_node(b["Stop_ID"]))
                 continue  # done with this trip_id group
 
             # Default: regular trips where dep/arr provided for each leg
@@ -407,15 +523,15 @@ def read_all_connections(xlsx_path):
 
                 connections.append({
                     "trip_id": trip_id,
-                    "from": str(a["Stop_ID"]).strip().upper(),
-                    "to":   str(b["Stop_ID"]).strip().upper(),
+                    "from": route_node(a["Stop_ID"]),
+                    "to":   route_node(b["Stop_ID"]),
                     "dep_s": int(a["dep_s"]),
                     "arr_s": int(b["arr_s"]),
                     "days":  set(a["days_set"]),
+                    "method": str(a.get("Method") or "").strip().upper(),
                 })
-                all_stops.add(str(a["Stop_ID"]).strip().upper())
-                all_stops.add(str(b["Stop_ID"]).strip().upper())
-
+                all_stops.add(route_node(a["Stop_ID"]))
+                all_stops.add(route_node(b["Stop_ID"]))
     return connections, sorted(all_stops)
 
 def to_abs(dt_local, seconds_since_midnight):
@@ -425,6 +541,30 @@ def to_abs(dt_local, seconds_since_midnight):
 def weekday_num(dt_local):
     # Monday=1 ... Sunday=7
     return (dt_local.weekday() + 1)
+
+
+# --- Store closing time selection and business open ---
+def store_close_time(code: str, dt_local: datetime, close_map: dict):
+    """Return the store closing time for the given local date (Mon–Fri or Sat)."""
+    code = canonical_br(code)
+    info = close_map.get(code) or {}
+    wd = weekday_num(dt_local)
+    if wd == 6:  # Saturday
+        return info.get("sat")
+    if 1 <= wd <= 5:  # Mon–Fri
+        return info.get("mf")
+    return None
+
+
+def next_business_open(dt_local: datetime, open_t: time = OPEN_TIME) -> datetime:
+    """Advance to next non-Sunday day at open_t."""
+    d = (dt_local + timedelta(days=1)).replace(hour=open_t.hour, minute=open_t.minute, second=0, microsecond=0)
+    # skip Sundays
+    for _ in range(7):
+        if weekday_num(d) != 7:
+            return d
+        d = (d + timedelta(days=1)).replace(hour=open_t.hour, minute=open_t.minute, second=0, microsecond=0)
+    return d
 
 def expand_connections(conns, start_dt_local):
     """
@@ -449,7 +589,8 @@ def expand_connections(conns, start_dt_local):
                     "from": c["from"],
                     "to": c["to"],
                     "dep": dep_abs,
-                    "arr": arr_abs
+                    "arr": arr_abs,
+                    "method": c.get("method", ""),
                 })
         d += timedelta(days=1)
     # Sort by (departure, arrival) so simultaneous departures prefer the quicker arrival
@@ -490,7 +631,7 @@ def earliest_arrival(
                 same_trip_ok = False
             required_buffer = 0 if same_trip_ok else transfer_sec
             earliest_board = best[u] + timedelta(seconds=required_buffer)
-            can_board = (earliest_board <= dep) or (best[u] == dep)
+            can_board = (earliest_board <= dep)
 
             # Additional business rule: for the FIRST leg leaving the origin,
             # if the departure date is LATER than the order date (e.g., overnight or weekend),
@@ -576,7 +717,7 @@ def suggest_matches(query: str, alias_index: dict[str, str], code_to_name: dict[
         if len(starts) + len(contains) >= limit:
             break
     ordered = starts + contains
-    return [f"{c} — {code_to_name.get(c, c)}" for c in ordered[:limit]]
+    return [f"{display_br(c)} — {code_to_name.get(c, c)}" for c in ordered[:limit]]
 
 # ---------- UI ----------
 
@@ -634,12 +775,19 @@ st.markdown(
     }
     /* Delivery method note under inputs */
     .method-note{
-      color:var(--muted);
-      font-size:15px;
+      color:#000000;
+      font-size:18px;
       margin-top:2px;
       margin-bottom:10px;
-      font-weight:600;
+      font-weight:400;
     }
+    
+    .method-note b{
+    color:#FF0000;
+    font-size:24px;
+    font-weight:800;
+    }
+
     /* Prominent arrival card */
     .arrival-card{
       border:2px solid var(--okBorder);
@@ -770,9 +918,11 @@ st.title("When Should it Arrive?")
 try:
     conns, stops = read_all_connections(DATA_XLSX)
 
-    # Load branch directory / aliases
-    code_to_name, alias_index = load_stores(STORES_CSV)
+    # Load branch directory / aliases and per-store close times
+    code_to_name, alias_index, close_times = load_stores(STORES_CSV)
 
+    # Allow equivalent branches to be selectable even if they aren't in the schedule stops list
+    stops_ui = sorted(set(stops) | set(BR_EQUIV.keys()))
 
     if not conns:
         st.error("No connections found. Check column names and that sheets contain Trip_ID, Stop_ID, Arrival_Time, Departure_Time, Sequence, Days_Active.")
@@ -787,7 +937,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("Supplier Branch")
     origin = st_searchbox(
-        lambda q: autocomplete_options(q, alias_index, code_to_name, stops),
+        lambda q: autocomplete_options(q, alias_index, code_to_name, stops_ui),
         key="origin_box",
         placeholder="BR60, 62, Merrill…",
         default=None,
@@ -797,7 +947,7 @@ with col2:
     st.markdown("Receiving Branch")
     dest = st_searchbox(
         # Exclude the selected origin from destination suggestions
-        lambda q: autocomplete_options(q, alias_index, code_to_name, [s for s in stops if s != origin], exclude=origin),
+        lambda q: autocomplete_options(q, alias_index, code_to_name, [s for s in stops_ui if s != origin], exclude=origin),
         key="dest_box",
         placeholder="BR65, 43, Sioux City…",
         default=None,
@@ -810,9 +960,25 @@ if not origin:
 if not dest:
     st.warning("Pick a destination branch to see the ETA.")
     st.stop()
+
+# Map equivalents (e.g., BR61 -> BR60, BR30 -> BR1) for routing
+origin_node = route_node(origin)
+dest_node = route_node(dest)
+
 if origin == dest:
     st.error("Origin and destination cannot be the same.")
     st.stop()
+
+# Also block equivalents (BR61 and BR60 are the same routing node, etc.)
+if origin_node == dest_node:
+    st.error("Origin and destination cannot be the same (some branches are routed as equivalents).")
+    st.stop()
+
+# Optional: show a note if we remapped either selection
+#if origin != origin_node or dest != dest_node:
+#    st.info(
+#        f"Note: routing uses {display_br(origin_node)} for {display_br(origin)} and {display_br(dest_node)} for {display_br(dest)}."
+#    )
 
 
 # Determine start datetime: use custom selection from session state if set; otherwise "now"
@@ -821,18 +987,28 @@ if st.session_state.get("custom_dt_active") and st.session_state.get("custom_dt_
 else:
     start_dt = datetime.now(TZ)
 
+# If the supplier (origin) is closed at the selected order time, treat the order as placed
+# at the next business-day opening time for routing purposes.
+routing_start_dt = start_dt
+origin_close_t = store_close_time(origin_node, routing_start_dt, close_times)
+if origin_close_t:
+    close_dt_today = routing_start_dt.replace(hour=origin_close_t.hour, minute=origin_close_t.minute, second=0, microsecond=0)
+    if routing_start_dt > close_dt_today:
+        routing_start_dt = next_business_open(routing_start_dt, open_t=OPEN_TIME)
+        # Origin is closed; we shift routing_start_dt to next business open (no UI warning shown).
+
 # --- Auto-calculate ETA on load (no buttons) ---
-# Defensive: disallow same origin/destination
-if origin == dest:
+# Defensive: disallow same origin/destination (including equivalents)
+if origin_node == dest_node:
     st.error("Origin and destination cannot be the same. Please choose a different destination branch.")
     st.stop()
 
-abs_legs = expand_connections(conns, start_dt)
+abs_legs = expand_connections(conns, routing_start_dt)
 
 eta, steps = earliest_arrival(
-    origin,
-    dest,
-    start_dt,
+    origin_node,
+    dest_node,
+    routing_start_dt,
     abs_legs,
     transfer_sec=MIN_TRANSFER_SECONDS,
 )
@@ -865,20 +1041,62 @@ if eta and steps:
         else:
             eta_display = dest_arr
 
-# Show cutoff message: last time you can place the order and still catch the first leg
-if steps:
-    first_leg = steps[0]
-    cutoff_dt = first_leg["dep"] - timedelta(seconds=MIN_TRANSFER_SECONDS)
-    # clamp to start time if transfer window would push cutoff before now
-    cutoff_display = cutoff_dt.strftime('%a %B %d, %Y %I:%M %p')
-    st.markdown(f"<div class='order-cutoff'>Order by <b>{cutoff_display}</b> to receive by this ETA.</div>", unsafe_allow_html=True)
-
 if not eta:
     st.error("No feasible path found within the lookahead window. Check schedules and Days_Active.")
 else:
     origin_name = display_name_for(origin, code_to_name)
     dest_name = display_name_for(dest, code_to_name)
 
+    # Suggest delivery method for DCs (BR60, BR30, BR83, BR51)
+    # Base it on the first leg in the chosen earliest-arrival path that actually
+    # departs from the DC origin, but if the overall route arrives in the
+    # overnight window and contains an NT leg, prefer NT as the recommendation.
+    delivery_hint = None
+    if steps and origin_node in DC_ORIGINS:
+        # Prefer the first leg in the chosen path whose 'from' is exactly the origin DC.
+        origin_legs = [leg for leg in steps if leg.get("from") == origin_node]
+        if origin_legs:
+            first_leg = origin_legs[0]
+        else:
+            # Fallback: use the very first leg in the path.
+            first_leg = steps[0]
+
+        method_code = (first_leg.get("method") or "").strip().upper()
+
+        if method_code:
+            # If the route is effectively an overnight delivery (arrives between
+            # 18:01 and 06:59 and we show a "by the time your store opens" message),
+            # and any leg in the chosen path uses NT, then recommend NT regardless
+            # of what the first hop's method is.
+            step_methods = [(l.get("method") or "").strip().upper() for l in steps]
+            if any(m == "NT" for m in step_methods):
+                # We'll refine this after we compute overnight_msg/opening_dt_for_msg below.
+                preferred_overnight_method = "NT"
+            else:
+                preferred_overnight_method = None
+
+            # Business rule overrides:
+            passes_through_br60 = any((l.get("from") == "BR60" or l.get("to") == "BR60") for l in steps)
+
+            # 1) BR51 routes that hand off at the BR60 meetup (Atlantic) must be ordered as SHU,
+            # even if the chosen path later contains an NT leg.
+            if origin_node == "BR51" and passes_through_br60:
+                method_code = "SHU"
+                preferred_overnight_method = None
+
+            # 2) If the route starts at BR30 and the chosen path passes through BR60,
+            # the ordering method must be LM (even if there is an NT leg later).
+            if origin_node == "BR30" and passes_through_br60:
+                method_code = "LM"
+                preferred_overnight_method = None
+
+            # We'll finalize which code to display later once we know whether
+            # overnight_msg is True. For now, stash the base method_code and any
+            # preferred overnight method in session-local variables via closure.
+            delivery_hint = {
+                "base_method": method_code,
+                "preferred_overnight": preferred_overnight_method,
+            }
     # Determine if the raw destination arrival lands in the "overnight" window (18:01–06:59)
     # If so, we will phrase the message as "by the time your store opens on Day, Date".
     overnight_msg = False
@@ -915,7 +1133,6 @@ else:
             f"</div>",
             unsafe_allow_html=True,
         )
-        
     else:
         past_prefix = "should have arrived on" if is_past_eta else "should arrive on"
         st.markdown(
@@ -926,6 +1143,46 @@ else:
             f"</div>",
             unsafe_allow_html=True,
         )
+
+    # Finalize delivery method hint based on whether this is an overnight-style delivery.
+    if isinstance(delivery_hint, dict):
+        base_method = delivery_hint.get("base_method")
+        preferred_overnight_method = delivery_hint.get("preferred_overnight")
+        method_to_show = base_method
+
+        # If we are in the overnight window and have an NT leg in the path,
+        # prefer NT as the recommended method.
+        if overnight_msg and preferred_overnight_method:
+            method_to_show = preferred_overnight_method
+
+        if method_to_show:
+            delivery_hint = (
+                f"To get this ETA, submit your order from {origin_name} using "
+                f"delivery method <b>{method_to_show}</b>."
+            )
+        else:
+            delivery_hint = None
+
+    # Show cutoff message: last time you can place the order and still catch the first leg
+    if steps:
+        first_leg = steps[0]
+        cutoff_dt = first_leg["dep"] - timedelta(seconds=MIN_TRANSFER_SECONDS)
+        # If the supplier closes earlier than the computed cutoff, clamp to closing time.
+        close_t = store_close_time(origin_node, first_leg["dep"], close_times)
+        if close_t:
+            close_dt = first_leg["dep"].replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
+            if close_dt < cutoff_dt:
+                cutoff_dt = close_dt
+        # clamp to start time if transfer window would push cutoff before now
+        cutoff_display = cutoff_dt.strftime('%a %B %d, %Y %I:%M %p')
+        st.markdown(
+            f"<div class='order-cutoff'>Order by <b>{cutoff_display}</b> to receive by this ETA.</div>",
+            unsafe_allow_html=True,
+        )
+
+    if delivery_hint:
+        st.markdown(f"<div class='method-note'>{delivery_hint}</div>", unsafe_allow_html=True)
+
     st.caption(f"(Note: This order ETA is an ESTIMATE only. Actual arrival could change depending on unforeseen circumstances.)")
     st.markdown("---")
 
@@ -974,8 +1231,8 @@ else:
             arr_txt   = leg["arr"].strftime("%a %b %d, %Y %I:%M %p")
             parts.append(
                 f"<div class='timeline-item'>"
-                f"<div class='timeline-meta'>Depart {leg['from']} — {from_name} at {dep_txt}</div>"
-                f"<div class='timeline-meta'>Arrive {leg['to']} — {to_name} at {arr_txt}</div>"
+                f"<div class='timeline-meta'>Depart {display_br(leg['from'])} — {from_name} at {dep_txt}</div>"
+                f"<div class='timeline-meta'>Arrive {display_br(leg['to'])} — {to_name} at {arr_txt}</div>"
                 f"</div>"
             )
         try:
@@ -984,7 +1241,7 @@ else:
                 parts.append(
                     f"<div class='timeline-item'>"
                     f"<div class='timeline-title'>Ready for pickup</div>"
-                    f"<div class='timeline-meta'>{dest} — {display_name_for(dest, code_to_name)} at {eta_display.strftime('%a %b %d, %Y %I:%M %p')}</div>"
+                    f"<div class='timeline-meta'>{display_br(dest)} — {display_name_for(dest, code_to_name)} at {eta_display.strftime('%a %b %d, %Y %I:%M %p')}</div>"
                     f"</div>"
                 )
         except Exception:
@@ -995,7 +1252,8 @@ else:
     # --- Date/time chooser content (below the toggles row) ---
     if st.session_state.get("show_custom_dt_open", False):
         _now_local = datetime.now(TZ)
-        active_dt = st.session_state.get("custom_dt_value", _now_local)
+        # If the key exists but is None, fall back to now.
+        active_dt = st.session_state.get("custom_dt_value") or _now_local
         default_date = active_dt.date()
         default_time = active_dt.time().replace(second=0, microsecond=0)
 
@@ -1040,6 +1298,7 @@ else:
         with c2:
             if st.button("Use current time", key="reset_custom_dt"):
                 st.session_state["custom_dt_active"] = False
+                # Clear the saved custom dt; UI will safely fall back to now.
                 st.session_state["custom_dt_value"] = None
                 st.rerun()
 
