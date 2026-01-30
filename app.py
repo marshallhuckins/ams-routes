@@ -36,6 +36,13 @@ ROUTE_NEXTDAY_MIN_DEP = {
 DC_ORIGINS = {"BR60", "BR30", "BR83", "BR51"}  # set of branch codes that are DC origins
 DAY_METHODS = {"SM", "EM", "LM", "SHU"}        # methods treated as daytime runs that can hand off to NT after last departure
 
+# BR30 special rule (gateway):
+# In the real world, any BR30 freight that will ultimately be handled by BR60/BR83
+# does NOT ride the BR30→BR51 night truck. It must leave BR30 on the LM shuttle to BR34,
+# where it meets BR60.
+BR30_BR60_GATEWAY_STOP = "BR34"
+BR30_BR60_GATEWAY_METHOD = "LM"
+
 # Branch equivalents: treat these codes as the same physical node for routing.
 # IMPORTANT: values must be canonicalized (no leading zeros): BR01 -> BR1
 # BR01 is an alias for BR30. canonical_br('BR01') => 'BR1', so map BR1 -> BR30.
@@ -1003,8 +1010,24 @@ if origin_node == dest_node:
     st.error("Origin and destination cannot be the same. Please choose a different destination branch.")
     st.stop()
 
+
 abs_legs = expand_connections(conns, routing_start_dt)
 
+
+# --- BR30 gateway rule (ENFORCED): if the best path is entering the BR60/BR83 network,
+# BR30 freight MUST first leave BR30 on the LM shuttle to BR34 (no BR30→BR51 night truck).
+# If we can't find a feasible path under this constraint, we stop and tell you to fix the schedule.
+
+def _m(x):
+    return (x.get("method") or "").strip().upper()
+
+def _is_blank_method(x) -> bool:
+    return _m(x) == ""
+
+def _passes_through(nodes_steps, node_code: str) -> bool:
+    return any((l.get("from") == node_code or l.get("to") == node_code) for l in (nodes_steps or []))
+
+# First pass: normal routing
 eta, steps = earliest_arrival(
     origin_node,
     dest_node,
@@ -1012,6 +1035,65 @@ eta, steps = earliest_arrival(
     abs_legs,
     transfer_sec=MIN_TRANSFER_SECONDS,
 )
+
+# If the normal route enters BR60/BR83 handling, enforce the BR30→BR34 (LM) gateway.
+if origin_node == "BR30" and steps and (_passes_through(steps, "BR60") or _passes_through(steps, "BR83")):
+    gateway_stop = BR30_BR60_GATEWAY_STOP        # BR34
+    gateway_method = BR30_BR60_GATEWAY_METHOD    # LM
+
+    # The LM shuttle is usually a multi-stop trip that LEAVES BR30 and eventually TOUCHES BR34.
+    # Our schedule therefore may not have a direct BR30→BR34 leg; instead it can be BR30→...→BR34.
+    # We enforce the rule by only allowing legs that depart BR30 on an LM (or blank-method) trip
+    # that reaches BR34 somewhere in that same trip.
+
+    # 1) Candidate trip_ids: anything that departs BR30 with the expected gateway method (or blank)
+    candidate_trip_ids = set()
+    for leg in abs_legs:
+        if leg.get("from") == "BR30":
+            if _m(leg) == gateway_method or _is_blank_method(leg):
+                candidate_trip_ids.add(leg.get("trip_id"))
+
+    # 2) Allowed trip_ids: candidate trips that touch the gateway stop BR34 anywhere
+    allowed_trip_ids = set()
+    for leg in abs_legs:
+        tid = leg.get("trip_id")
+        if tid in candidate_trip_ids and (leg.get("from") == gateway_stop or leg.get("to") == gateway_stop):
+            allowed_trip_ids.add(tid)
+
+    # If we can't find any such shuttle trip in the lookahead window, fail clearly.
+    if not allowed_trip_ids:
+        st.error(
+            "BR30→BR60/BR83 freight must leave BR30 on the LM shuttle that meets BR60 at BR34, "
+            "but no LM shuttle trip departing BR30 that reaches BR34 was found in the current schedule window. "
+            "Check RouteSchedule.xlsx for a BR30 LM trip that runs BR30→…→BR34 on the appropriate day(s)/time(s)."
+        )
+        st.stop()
+
+    # 3) Enforce: any leg that departs BR30 must be on one of the allowed shuttle trips.
+    # This blocks the BR30→BR51 night truck while still allowing BR30→BR03→…→BR34 type routes.
+    abs_legs_gateway = [
+        leg for leg in abs_legs
+        if not (leg.get("from") == "BR30" and leg.get("trip_id") not in allowed_trip_ids)
+    ]
+
+    eta2, steps2 = earliest_arrival(
+        origin_node,
+        dest_node,
+        routing_start_dt,
+        abs_legs_gateway,
+        transfer_sec=MIN_TRANSFER_SECONDS,
+    )
+
+    if not eta2 or not steps2:
+        st.error(
+            "BR30→BR60/BR83 freight must leave BR30 on the LM shuttle that meets BR60 at BR34, "
+            "but no feasible route was found under that rule within the lookahead window. "
+            "Double-check that the BR30 LM shuttle connects onward to BR60 (and then to your destination) on the correct days."
+        )
+        st.stop()
+
+    # Use the constrained path (this blocks the BR30→BR51 night truck in these cases)
+    eta, steps = eta2, steps2
 
 
 # Prefer a "ready" time without delivery-method special cases:
