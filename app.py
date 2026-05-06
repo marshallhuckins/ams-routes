@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, time
 from dateutil import tz
-from streamlit_searchbox import st_searchbox
+
 
 # --- Settings you can tweak ---
 DATA_XLSX = "RouteSchedule.xlsx"
@@ -251,22 +251,182 @@ def load_stores(csv_path: str):
 
     return code_to_name, alias_index, close_times
 
+
+# --- Google sign-in helpers (inserted after load_stores) ---
+def email_alias_key(value: str) -> str:
+    """Normalize a store email prefix or branch name for matching."""
+    value = (value or "").strip().lower()
+    if "@" in value:
+        value = value.split("@", 1)[0]
+    return "".join(ch for ch in value if ch.isalnum())
+
+EMAIL_BRANCH_DEFAULTS = {
+    "apw": "BR61",
+    "rockisland": "BR80",
+    "grandislanddc": "BR83",
+    "grandisland": "BR77",
+    "ips": "BR91",
+    "merrill": "BR30",
+}
+
+def default_branch_from_email(email: str, stops: list[str], code_to_name: dict[str, str]) -> str | None:
+    """Match company store emails like glenwood@domain.com to a branch code."""
+    email_key = email_alias_key(email)
+    if not email_key:
+        return None
+
+    # First, check explicit overrides for email prefixes that do not match the store name exactly.
+    mapped_code = EMAIL_BRANCH_DEFAULTS.get(email_key)
+    if mapped_code:
+        mapped_code = canonical_br(mapped_code)
+        if mapped_code in stops:
+            return mapped_code
+
+    # Then fall back to automatic matching against branch name/code.
+    for code in stops:
+        name = code_to_name.get(code, code)
+        possible_keys = {
+            email_alias_key(name),
+            email_alias_key(display_br(code)),
+            email_alias_key(code),
+        }
+        if email_key in possible_keys:
+            return code
+
+    return None
+
+
+def auth_is_configured() -> bool:
+    """Return True only when Streamlit Google auth secrets are present."""
+    try:
+        auth_config = st.secrets.get("auth")
+        google_config = auth_config.get("google") if auth_config else None
+        if not auth_config or not google_config:
+            return False
+        return bool(
+            auth_config.get("redirect_uri")
+            and auth_config.get("cookie_secret")
+            and google_config.get("client_id")
+            and google_config.get("client_secret")
+            and google_config.get("server_metadata_url")
+        )
+    except Exception:
+        return False
+
+
+def current_google_email() -> str | None:
+    """Return the signed-in Google email when Streamlit auth is configured and active."""
+    try:
+        if auth_is_configured() and getattr(st.user, "is_logged_in", False):
+            return st.user.get("email")
+    except Exception:
+        pass
+    return None
+
+
+ALLOWED_GOOGLE_DOMAINS = {"arnoldgroupweb.com", "arnoldmotorsupply.com"}
+
+
+def google_email_domain(email: str) -> str:
+    """Return the lowercase domain from an email address."""
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[1]
+
+
+def google_email_is_allowed(email: str) -> bool:
+    """Allow only Arnold Motor Supply / Arnold Group Google accounts."""
+    return google_email_domain(email) in ALLOWED_GOOGLE_DOMAINS
+
+
+def render_account_footer():
+    """Render Google sign-in controls below the branch dropdowns."""
+    st.markdown("---")
+    st.markdown("<div class='account-footer'>", unsafe_allow_html=True)
+
+    if auth_is_configured():
+        footer_email = current_google_email()
+        if footer_email:
+            if google_email_is_allowed(footer_email):
+                st.caption(f"Signed in as {footer_email}")
+            else:
+                st.warning(
+                    "You are signed in, but this app only uses Arnold Motor Supply / Arnold Group email accounts "
+                    "to default the receiving branch. Please sign in with an @arnoldgroupweb.com or "
+                    "@arnoldmotorsupply.com account."
+                )
+            if st.button("Sign out", key="google_logout_footer_btn"):
+                st.logout()
+        else:
+            st.caption("Sign in with your Arnold Google account to default your receiving branch.")
+            if st.button("Sign in with Google", key="google_login_footer_btn"):
+                st.login("google")
+    else:
+        st.caption("Google sign-in is not configured yet. Receiving Branch can still be selected manually.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def require_allowed_google_account():
+    """Block the app unless the user is signed in with an allowed company Google account."""
+    if not auth_is_configured():
+        st.error("Google sign-in is not configured. Please configure app secrets before using this app.")
+        st.stop()
+
+    email = current_google_email()
+
+    if not email:
+        st.markdown(
+            "<div class='arrival-card'>Sign in with your Arnold Google account to use this app.</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Sign in with Google", key="google_login_gate_btn"):
+            st.login("google")
+        st.stop()
+
+    if not google_email_is_allowed(email):
+        st.error(
+            "Access denied. This app is only available to Arnold Motor Supply / Arnold Group Google accounts. "
+            "Please sign out and sign in with an @arnoldgroupweb.com or @arnoldmotorsupply.com account."
+        )
+        st.caption(f"Currently signed in as {email}")
+        if st.button("Sign out", key="google_logout_gate_btn"):
+            st.logout()
+        st.stop()
+
 def autocomplete_options(query: str,
                          alias_index: dict[str, str],
                          code_to_name: dict[str, str],
                          stops: list[str],
                          exclude: str | None = None,
-                         limit: int = 12):
+                         limit: int | None = None):
     """
     Returns a list of (display_label, value_code) pairs for st_searchbox.
-    - Matches aliases (e.g., 'merrill', '30', 'br60') via your alias_index
-    - Prefers startswith → contains
-    - Adds smart guesses (digits → BRnn)
-    - Excludes a specific code (so dest can exclude origin)
+    - When the search box is empty, show the full branch list in branch-number order.
+    - When typing, matches aliases (e.g., 'merrill', '30', 'br60') via alias_index.
+    - Prefers startswith → contains.
+    - Adds smart guesses (digits → BRnn).
+    - Excludes a specific code when needed.
     """
+    def _branch_sort_key(code: str):
+        c = canonical_br(code)
+        if c.startswith("BR") and c[2:].isdigit():
+            return (0, int(c[2:]))
+        return (1, c)
+
     qn = _norm(query)
+
+    # If the user has not typed anything yet, show all available branches in order.
     if not qn:
-        return []
+        ordered_stops = sorted(
+            [s for s in stops if not exclude or s != exclude],
+            key=_branch_sort_key,
+        )
+        return [
+            (f"{display_br(code)} — {code_to_name.get(code, code)}", code)
+            for code in ordered_stops
+        ]
 
     # If input exactly names a known alias or exact code, return that single choice.
     raw = (query or "").strip()
@@ -307,9 +467,9 @@ def autocomplete_options(query: str,
     # 1) alias startswith
     starts, contains = [], []
     for alias, code in alias_index.items():
-        if code in seen: 
+        if code in seen:
             continue
-        if code not in stops: 
+        if code not in stops:
             continue
         if exclude and code == exclude:
             continue
@@ -321,7 +481,11 @@ def autocomplete_options(query: str,
     ordered = []
     for code in starts + contains:
         if code not in seen:
-            ordered.append(code); seen.add(code)
+            ordered.append(code)
+            seen.add(code)
+
+    if limit is None:
+        limit = 50
 
     # Build labels
     for code in ordered[: max(0, limit - len(out))]:
@@ -743,177 +907,415 @@ st.markdown(
     """
     <style>
     :root{
-      --bg:#d5e1e6;          /* page background */
-      --panel:#eef3f6;       /* lighter panels */
-      --text:#0b0f14;        /* primary text */
-      --muted:#39424e;       /* muted text */
-      --accent:#007897;      /* brand teal */
-      --okBorder:#2e7d32;    /* green border for arrival card */
-      --okBg:#e8f5e9;        /* pale green background for arrival card */
-      --warn:#eb3952;        /* red for cutoff text */
-      --inputBg:#ffffff;     /* input background */
-      --inputBorder:#9ca2e5; /* input border */
-      --placeholder:#6b7b8a; /* placeholder text */
+      --page-bg:#eef4f7;
+      --card-bg:#ffffff;
+      --card-soft:#f7fafc;
+      --text:#10202b;
+      --muted:#5b6b78;
+      --accent:#007897;
+      --accent-dark:#005f78;
+      --accent-soft:#e4f4f7;
+      --success-bg:#e8f6ef;
+      --success-border:#2f8f5b;
+      --success-text:#0f5b3a;
+      --warn:#d92f48;
+      --input-bg:#ffffff;
+      --input-border:#c8d7df;
+      --shadow:0 18px 45px rgba(16, 32, 43, 0.10);
+      --radius:18px;
     }
+
     html, body, [data-testid="stAppViewContainer"]{
-      background-color:var(--bg) !important;
+      color-scheme: light !important;
+      background:
+        radial-gradient(circle at top left, rgba(0,120,151,0.12), transparent 32%),
+        linear-gradient(180deg, #f6fbfd 0%, var(--page-bg) 100%) !important;
       color:var(--text) !important;
     }
+
+    *{
+      color-scheme: light !important;
+    }
+
     [data-testid="stHeader"]{
       background: transparent !important;
     }
-    /* Make form labels darker and easier to read */
-    .stTextInput > label, .stSelectbox > label, .stDateInput > label{
+
+    [data-testid="stAppViewContainer"] > .main{
+      padding-top:24px !important;
+    }
+
+    .block-container{
+      max-width:860px !important;
+      padding-top:24px !important;
+      padding-bottom:48px !important;
+    }
+
+    /* Main app shell */
+    .block-container > div:first-child{
+      background:rgba(255,255,255,0.86);
+      backdrop-filter:blur(10px);
+      -webkit-backdrop-filter:blur(10px);
+      border:1px solid rgba(200,215,223,0.78);
+      border-radius:28px;
+      box-shadow:var(--shadow);
+      padding:28px 30px 32px 30px;
+    }
+
+    /* Logo area */
+    [data-testid="stImage"]{
+      margin-bottom:4px;
+    }
+
+    h1{
+      text-align:center;
       color:var(--text) !important;
-      font-weight:600 !important;
-      opacity:1 !important;
+      font-size:2.15rem !important;
+      font-weight:850 !important;
+      letter-spacing:-0.035em;
+      margin-top:6px !important;
+      margin-bottom:26px !important;
     }
-    /* Inputs styling (text color and placeholder visible) */
-    .stTextInput input{
-      background-color:var(--inputBg) !important;
-      border:1px solid var(--inputBorder) !important;
-      color:var(--text) !important;
-    }
-    .stTextInput input::placeholder{
-      color:var(--placeholder) !important;
-      opacity:1 !important;
-    }
-    .stTextInput input:focus{
-      outline:none !important;
-      box-shadow:0 0 0 2px var(--accent) inset !important;
-    }
-    /* Cutoff message just below inputs */
-    .order-cutoff{
-      color:var(--warn);
-      font-size:18px;          /* smaller than main ETA */
-      margin-top:6px;
-      margin-bottom:12px;
-      font-weight:600;
-    }
-    /* Delivery method note under inputs */
-    .method-note{
-      color:#000000;
-      font-size:18px;
-      margin-top:2px;
-      margin-bottom:10px;
-      font-weight:400;
-    }
+
     
-    .method-note b{
-    color:#FF0000;
-    font-size:24px;
-    font-weight:800;
+
+    /* Field group labels created with st.markdown */
+    .stMarkdown p{
+      color:var(--text);
+    }
+
+    .stTextInput > label,
+    .stSelectbox > label,
+    .stDateInput > label,
+    label{
+      color:var(--text) !important;
+      font-weight:750 !important;
+      opacity:1 !important;
+      font-size:0.95rem !important;
+    }
+
+    /* Inputs and search boxes */
+    .stTextInput input,
+    div[data-baseweb="input"] input{
+      background-color:var(--input-bg) !important;
+      color:var(--text) !important;
+      border-radius:14px !important;
+      min-height:46px !important;
+    }
+
+    .stTextInput input,
+    div[data-baseweb="input"]{
+      border:1px solid var(--input-border) !important;
+      box-shadow:0 1px 2px rgba(16,32,43,0.04) !important;
+      background:var(--input-bg) !important;
+      border-radius:14px !important;
+    }
+
+    .stTextInput input::placeholder,
+    div[data-baseweb="input"] input::placeholder{
+      color:#7b8b98 !important;
+      opacity:1 !important;
+    }
+
+    .stTextInput input:focus,
+    div[data-baseweb="input"]:focus-within{
+      border-color:var(--accent) !important;
+      box-shadow:0 0 0 3px rgba(0,120,151,0.15) !important;
+      outline:none !important;
+    }
+
+    /* Selectboxes: force one consistent light display at all times */
+    div[data-baseweb="select"],
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="select"] div{
+      background:#ffffff !important;
+      color:var(--text) !important;
+    }
+
+    div[data-baseweb="select"] span,
+    div[data-baseweb="select"] svg{
+      color:var(--text) !important;
+      fill:var(--text) !important;
+      opacity:1 !important;
+    }
+
+    div[data-baseweb="select"] input,
+    div[data-baseweb="select"] textarea,
+    div[data-baseweb="select"] [contenteditable="true"]{
+      background:#ffffff !important;
+      color:var(--text) !important;
+      caret-color:var(--text) !important;
+      -webkit-text-fill-color:var(--text) !important;
+      opacity:1 !important;
+    }
+
+    div[data-baseweb="select"] input::placeholder,
+    div[data-baseweb="select"] textarea::placeholder{
+      color:#7b8b98 !important;
+      -webkit-text-fill-color:#7b8b98 !important;
+      opacity:1 !important;
+    }
+
+    div[data-baseweb="popover"]{
+      border-radius:14px !important;
+      overflow:hidden !important;
+      box-shadow:0 14px 34px rgba(16,32,43,0.16) !important;
+      background:#ffffff !important;
+    }
+
+    ul[role="listbox"]{
+      border-radius:14px !important;
+      border:1px solid var(--input-border) !important;
+      background:#ffffff !important;
+      color:var(--text) !important;
+    }
+
+    li[role="option"],
+    div[role="option"]{
+      background:#ffffff !important;
+      color:var(--text) !important;
+      font-weight:700 !important;
+      padding-top:10px !important;
+      padding-bottom:10px !important;
+    }
+
+    li[role="option"] *,
+    div[role="option"] *{
+      color:var(--text) !important;
+      opacity:1 !important;
+    }
+
+    li[role="option"]:hover,
+    div[role="option"]:hover,
+    li[aria-selected="true"],
+    div[aria-selected="true"]{
+      background:var(--accent-soft) !important;
+      color:var(--accent-dark) !important;
+    }
+
+    li[role="option"]:hover *,
+    div[role="option"]:hover *,
+    li[aria-selected="true"] *,
+    div[aria-selected="true"] *{
+      color:var(--accent-dark) !important;
     }
 
     /* Prominent arrival card */
     .arrival-card{
-      border:2px solid var(--okBorder);
-      background-color:var(--okBg);
-      padding:18px;
-      border-radius:10px;
-      font-size:26px;          /* make ETA prominent */
-      font-weight:700;
-      line-height:1.25;
+      border:1px solid rgba(47,143,91,0.35);
+      background:
+        linear-gradient(135deg, rgba(232,246,239,1) 0%, rgba(246,253,249,1) 100%);
+      padding:22px 24px;
+      border-radius:var(--radius);
+      font-size:25px;
+      font-weight:760;
+      line-height:1.28;
+      box-shadow:0 10px 26px rgba(47,143,91,0.12);
+      margin-top:8px;
+      margin-bottom:12px;
+      color:#123026;
     }
+
     .arrival-card .eta{
-      color:#0a5f73;           /* darker teal for contrast on light bg */
-      font-weight:800;
+      color:var(--success-text);
+      font-weight:900;
     }
+
     .arrival-card .date{
-      color:var(--muted);
+      color:#41545f;
+      font-weight:650;
+    }
+
+    /* Cutoff message just below ETA */
+    .order-cutoff{
+      color:var(--warn);
+      background:#fff2f4;
+      border:1px solid rgba(217,47,72,0.18);
+      border-radius:14px;
+      padding:12px 14px;
+      font-size:17px;
+      margin-top:10px;
+      margin-bottom:10px;
+      font-weight:650;
+    }
+
+    /* Delivery method note */
+    .method-note{
+      color:var(--text);
+      background:var(--accent-soft);
+      border:1px solid rgba(0,120,151,0.18);
+      border-radius:14px;
+      padding:12px 14px;
+      font-size:17px;
+      margin-top:8px;
+      margin-bottom:10px;
       font-weight:600;
     }
+
+    .method-note b{
+      color:var(--accent-dark);
+      font-size:22px;
+      font-weight:900;
+      letter-spacing:0.02em;
+    }
+
+    .stCaption,
+    [data-testid="stCaptionContainer"]{
+      color:var(--muted) !important;
+      font-size:0.9rem !important;
+    }
+
+    hr{
+      border:none !important;
+      border-top:1px solid rgba(91,107,120,0.18) !important;
+      margin:22px 0 !important;
+    }
+
     /* Route timeline */
     .timeline{
       position:relative;
       margin:18px 0 8px 0;
-      padding-left:22px;
+      padding:8px 0 4px 24px;
+      background:var(--card-soft);
+      border:1px solid rgba(200,215,223,0.7);
+      border-radius:16px;
     }
+
     .timeline::before{
       content:"";
       position:absolute;
-      left:8px; top:0; bottom:0;
+      left:17px; top:18px; bottom:18px;
       width:2px; background:var(--accent);
       opacity:0.45;
     }
+
     .timeline-item{
       position:relative;
-      margin:0 0 14px 0;
-      padding-left:14px;
+      margin:0 12px 15px 0;
+      padding-left:18px;
     }
+
     .timeline-item::before{
       content:"";
       position:absolute;
-      left:-2px; top:4px;
-      width:10px; height:10px;
+      left:-11px; top:5px;
+      width:12px; height:12px;
       border-radius:50%;
       background:var(--accent);
+      box-shadow:0 0 0 4px rgba(0,120,151,0.13);
     }
+
     .timeline-title{
-      font-weight:800;
-      color:#0a5f73;
-      margin-bottom:2px;
+      font-weight:850;
+      color:var(--accent-dark);
+      margin-bottom:4px;
     }
+
     .timeline-meta{
       color:var(--muted);
       font-size:14px;
-      font-weight:600;
-    }
-    /* Boost contrast of Streamlit alerts (warnings/errors below inputs) */
-    /* High-contrast alerts that fit our palette */
-    div[role="alert"]{
-        background:#ffe8ec !important;           /* light blush */
-        border:2px solid #eb3952 !important;      /* brand red */
-        color:#2b0a0e !important;                 /* dark text */
-        border-radius:8px !important;
-        font-weight:600 !important;
+      font-weight:650;
+      line-height:1.45;
     }
 
-    /* Make all nested text readable */
+    /* High-contrast alerts */
+    div[role="alert"]{
+      background:#fff1f3 !important;
+      border:1px solid rgba(217,47,72,0.32) !important;
+      color:#2b0a0e !important;
+      border-radius:14px !important;
+      font-weight:650 !important;
+      box-shadow:0 6px 16px rgba(217,47,72,0.08) !important;
+    }
+
     div[role="alert"] p,
     div[role="alert"] span,
     div[role="alert"] li,
     div[role="alert"] *{
-        color:#2b0a0e !important;
-        opacity:1 !important;
+      color:#2b0a0e !important;
+      opacity:1 !important;
     }
 
-    /* Optional: tint the alert icon to match */
     div[role="alert"] [data-testid="stIconContainer"] svg{
-        color:#eb3952 !important;
+      color:var(--warn) !important;
     }
-    /* Buttons (if any appear) */
+
+    /* Primary buttons */
     .stButton button{
       background-color:var(--accent) !important;
       border:1px solid var(--accent) !important;
       color:white !important;
-    }
-    .stButton button:hover{
-      filter:brightness(0.95);
-    }
-    /* Link-like button wrapper */
-    .linklike > button{
-      background: transparent !important;
-      border: none !important;
-      color: var(--accent) !important;
-      text-decoration: underline !important;
-      padding: 0 !important;
-      font-weight: 700 !important;
-      box-shadow: none !important;
-    }
-    .linklike > button:hover{
-      filter: none !important;
-      opacity: 0.85 !important;
-      text-decoration: underline !important;
+      border-radius:14px !important;
+      min-height:42px !important;
+      font-weight:800 !important;
+      box-shadow:0 8px 18px rgba(0,120,151,0.16) !important;
+      transition:all 0.15s ease-in-out !important;
     }
 
-    /* Hide Streamlit top toolbar (Deploy & menu), header chrome, and footer */
+    .stButton button:hover{
+      background-color:var(--accent-dark) !important;
+      border-color:var(--accent-dark) !important;
+      transform:translateY(-1px);
+    }
+
+    /* Link-like route/custom toggles */
+    .linklike > button{
+      width:100%;
+      text-align:center !important;
+      background:#f4f8fa !important;
+      border:1px solid rgba(0,120,151,0.18) !important;
+      color:var(--accent-dark) !important;
+      text-decoration:none !important;
+      padding:10px 12px !important;
+      font-weight:800 !important;
+      box-shadow:none !important;
+      border-radius:14px !important;
+    }
+
+    .linklike > button:hover{
+      background:var(--accent-soft) !important;
+      opacity:1 !important;
+      transform:translateY(-1px);
+    }
+
+    /* Date/time chooser visual spacing */
+    [data-testid="stDateInput"],
+    [data-testid="stTextInput"],
+    [data-testid="stSelectbox"]{
+      margin-bottom:4px;
+    }
+
+    /* Hide Streamlit top toolbar, header chrome, and footer */
     header[data-testid="stHeader"]{ display:none !important; }
     div[data-testid="stToolbar"]{ display:none !important; }
     div#MainMenu{ visibility:hidden !important; }
     div[data-testid="stStatusWidget"]{ display:none !important; }
     div[data-testid="stDecoration"]{ display:none !important; }
     footer{ visibility:hidden !important; }
+
+    @media (max-width: 640px){
+      .block-container{
+        padding:14px 12px 36px 12px !important;
+      }
+      .block-container > div:first-child{
+        padding:20px 16px 24px 16px;
+        border-radius:22px;
+      }
+      h1{
+        font-size:1.78rem !important;
+      }
+      .arrival-card{
+        font-size:21px;
+        padding:18px;
+      }
+      .order-cutoff,
+      .method-note{
+        font-size:15px;
+      }
+      .method-note b{
+        font-size:19px;
+      }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -929,6 +1331,9 @@ except Exception:
     pass  # if the logo file is missing, proceed without blocking the app
 
 st.title("When Should it Arrive?")
+
+# Require a company Google account before showing the route lookup.
+require_allowed_google_account()
 
 
 # Load network
@@ -949,33 +1354,104 @@ except Exception as e:
     st.stop()
 
 
+def branch_dropdown_options(stops: list[str], code_to_name: dict[str, str], exclude: str | None = None):
+    """Return branch dropdown labels and a label-to-code lookup, sorted by branch number."""
+    def _branch_sort_key(code: str):
+        c = canonical_br(code)
+        if c.startswith("BR") and c[2:].isdigit():
+            return (0, int(c[2:]))
+        return (1, c)
+
+    ordered_stops = sorted(
+        [s for s in stops if not exclude or s != exclude],
+        key=_branch_sort_key,
+    )
+
+    labels = [
+        f"{display_br(code)} — {code_to_name.get(code, code)}"
+        for code in ordered_stops
+    ]
+
+    lookup = dict(zip(labels, ordered_stops))
+    return labels, lookup
+
+def branch_label_for(code: str, code_to_name: dict[str, str]) -> str | None:
+    """Return the dropdown label for a branch code."""
+    if not code:
+        return None
+    code = canonical_br(code)
+    return f"{display_br(code)} — {code_to_name.get(code, code)}"
+
+
+def remember_branch_selection(widget_key: str, state_key: str, lookup: dict[str, str]):
+    """Store the selected branch code separately so reruns do not wipe the choice."""
+    selected_label = st.session_state.get(widget_key)
+    if selected_label:
+        selected_code = lookup.get(selected_label)
+        if selected_code:
+            st.session_state[state_key] = selected_code
+
+
+# Use the signed-in company email to default the receiving branch.
+google_email = current_google_email()
+
+if google_email and not st.session_state.get("selected_dest_code"):
+    default_dest = default_branch_from_email(google_email, stops_ui, code_to_name)
+    if default_dest:
+        st.session_state["selected_dest_code"] = default_dest
+
+origin_labels, origin_lookup = branch_dropdown_options(stops_ui, code_to_name)
+
+saved_origin = st.session_state.get("selected_origin_code")
+saved_origin_label = branch_label_for(saved_origin, code_to_name)
+origin_index = origin_labels.index(saved_origin_label) if saved_origin_label in origin_labels else None
+
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("Supplier Branch")
-    origin = st_searchbox(
-        lambda q: autocomplete_options(q, alias_index, code_to_name, stops_ui),
+    origin_label = st.selectbox(
+        "Supplier Branch",
+        origin_labels,
+        index=origin_index,
+        placeholder="Choose or search supplier branch…",
         key="origin_box",
-        placeholder="BR60, 62, Merrill…",
-        default=None,
+        on_change=remember_branch_selection,
+        args=("origin_box", "selected_origin_code", origin_lookup),
     )
+    origin = origin_lookup.get(origin_label) if origin_label else st.session_state.get("selected_origin_code")
+
+# Build the destination list after origin is selected so the same branch can be excluded.
+dest_labels, dest_lookup = branch_dropdown_options(stops_ui, code_to_name, exclude=origin)
+
+saved_dest = st.session_state.get("selected_dest_code")
+saved_dest_label = branch_label_for(saved_dest, code_to_name)
+dest_index = dest_labels.index(saved_dest_label) if saved_dest_label in dest_labels else None
 
 with col2:
-    st.markdown("Receiving Branch")
-    dest = st_searchbox(
-        # Exclude the selected origin from destination suggestions
-        lambda q: autocomplete_options(q, alias_index, code_to_name, [s for s in stops_ui if s != origin], exclude=origin),
+    dest_label = st.selectbox(
+        "Receiving Branch",
+        dest_labels,
+        index=dest_index,
+        placeholder="Choose or search receiving branch…",
         key="dest_box",
-        placeholder="BR65, 43, Sioux City…",
-        default=None,
+        on_change=remember_branch_selection,
+        args=("dest_box", "selected_dest_code", dest_lookup),
     )
+    dest = dest_lookup.get(dest_label) if dest_label else st.session_state.get("selected_dest_code")
+
+# If the saved destination is no longer valid because it matches the selected supplier, clear it.
+if dest and origin and dest == origin:
+    st.session_state["selected_dest_code"] = None
+    dest = None
 
 # Validate selections
 if not origin:
     st.warning("Pick an origin branch to see the ETA.")
+    render_account_footer()
     st.stop()
 if not dest:
     st.warning("Pick a destination branch to see the ETA.")
+    render_account_footer()
     st.stop()
 
 # Map equivalents (e.g., BR61 -> BR60, BR30 -> BR1) for routing
@@ -1298,7 +1774,7 @@ else:
 
     # --- Inline toggles row (link-like buttons; equal width) ---
     # Ensure consistent full-width styling for link-like buttons in columns
-    st.markdown("<style>.linklike > button{width:100%; text-align:left;}</style>", unsafe_allow_html=True)
+    st.markdown("<style>.linklike > button{width:100%;}</style>", unsafe_allow_html=True)
 
     # Read current states
     show_route = st.session_state.get("show_route_open", False)
@@ -1410,6 +1886,9 @@ else:
                 # Clear the saved custom dt; UI will safely fall back to now.
                 st.session_state["custom_dt_value"] = None
                 st.rerun()
+
+    # Account controls live at the bottom so they do not interrupt the route lookup flow.
+    render_account_footer()
 
     # In the unlikely case of zero steps (should only happen if origin == dest, which we block)
     pass
