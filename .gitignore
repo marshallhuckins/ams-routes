@@ -6,3 +6,5 @@ __pycache__/
 ~.xlsx
 .streamlit/secrets.toml
 ~.xlsx
+.streamlit/secrets.toml
+~.xlsx

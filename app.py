@@ -35,6 +35,7 @@ ROUTE_NEXTDAY_MIN_DEP = {
 
 DC_ORIGINS = {"BR60", "BR30", "BR83", "BR51"}  # set of branch codes that are DC origins
 DAY_METHODS = {"SM", "EM", "LM", "SHU"}        # methods treated as daytime runs that can hand off to NT after last departure
+INTERNAL_STOP_PREFIXES = ("BRM_", "MEET_")      # route-only transfer points; hide from user branch dropdowns
 
 # BR30 special rule (gateway):
 # In the real world, any BR30 freight that will ultimately be handled by BR60/BR83
@@ -104,6 +105,10 @@ def display_br(code, width: int = 2) -> str:
         return f"BR{int(c[2:]):0{width}d}"
     return c
 
+def is_internal_route_stop(code: str) -> bool:
+    """Return True for route-only transfer/meetup stops that should not appear in user dropdowns."""
+    raw = "" if code is None else str(code).strip().upper()
+    return raw.startswith(INTERNAL_STOP_PREFIXES)
 
 # --- Store closing time parser ---
 def parse_clock_time(val):
@@ -1344,7 +1349,10 @@ try:
     code_to_name, alias_index, close_times = load_stores(STORES_CSV)
 
     # Allow equivalent branches to be selectable even if they aren't in the schedule stops list
-    stops_ui = sorted(set(stops) | set(BR_EQUIV.keys()))
+    stops_ui = sorted(
+        s for s in (set(stops) | set(BR_EQUIV.keys()))
+        if not is_internal_route_stop(s)
+    )
 
     if not conns:
         st.error("No connections found. Check column names and that sheets contain Trip_ID, Stop_ID, Arrival_Time, Departure_Time, Sequence, Days_Active.")
@@ -1363,7 +1371,11 @@ def branch_dropdown_options(stops: list[str], code_to_name: dict[str, str], excl
         return (1, c)
 
     ordered_stops = sorted(
-        [s for s in stops if not exclude or s != exclude],
+        [
+            s for s in stops
+            if (not exclude or s != exclude)
+            and not is_internal_route_stop(s)
+        ],
         key=_branch_sort_key,
     )
 
