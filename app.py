@@ -1737,7 +1737,12 @@ else:
         close_t = store_close_time(origin_node, first_leg["dep"], close_times)
         if close_t:
             close_dt = first_leg["dep"].replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
+
             if first_method == "NT" and origin_node not in DC_ORIGINS:
+                # If the night-truck pickup time is after midnight, the cutoff belongs to the prior business day.
+                # Example: a 12:30 AM Wednesday pickup should use Tuesday's close-minus-buffer cutoff.
+                if close_dt > first_leg["dep"]:
+                    close_dt = close_dt - timedelta(days=1)
                 cutoff_dt = close_dt - timedelta(seconds=MIN_TRANSFER_SECONDS)
             elif close_dt < cutoff_dt:
                 cutoff_dt = close_dt
