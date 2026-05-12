@@ -1729,13 +1729,19 @@ else:
     # Show the latest order time that still catches the first leg.
     if steps:
         first_leg = steps[0]
+        first_method = (first_leg.get("method") or "").strip().upper()
         cutoff_dt = first_leg["dep"] - timedelta(seconds=MIN_TRANSFER_SECONDS)
-        # If the supplier closes before the route cutoff, use closing time instead.
+
+        # Store-origin night-truck pickups should use the store closing time as the order cutoff,
+        # not the time the driver gets there. DC origins still use the normal route cutoff logic.
         close_t = store_close_time(origin_node, first_leg["dep"], close_times)
         if close_t:
             close_dt = first_leg["dep"].replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
-            if close_dt < cutoff_dt:
+            if first_method == "NT" and origin_node not in DC_ORIGINS:
+                cutoff_dt = close_dt - timedelta(seconds=MIN_TRANSFER_SECONDS)
+            elif close_dt < cutoff_dt:
                 cutoff_dt = close_dt
+
         # Format the cutoff for display.
         cutoff_display = cutoff_dt.strftime('%a %B %d, %Y %I:%M %p')
         st.markdown(
