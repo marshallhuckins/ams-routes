@@ -1797,31 +1797,94 @@ else:
 
     # --- Route timeline ---
     if steps and st.session_state.get("show_route_open", False):
-        parts = ["<div class='timeline'>"]
-        for i, leg in enumerate(steps, start=1):
-            from_name = display_name_for(leg['from'], code_to_name)
-            to_name   = display_name_for(leg['to'], code_to_name)
-            dep_txt   = leg["dep"].strftime("%a %b %d, %Y %I:%M %p")
-            arr_txt   = leg["arr"].strftime("%a %b %d, %Y %I:%M %p")
-            parts.append(
-                f"<div class='timeline-item'>"
-                f"<div class='timeline-meta'>Depart {display_br(leg['from'])} — {from_name} at {dep_txt}</div>"
-                f"<div class='timeline-meta'>Arrive {display_br(leg['to'])} — {to_name} at {arr_txt}</div>"
-                f"</div>"
-            )
-        try:
-            last_leg = steps[-1]
-            if eta_display and eta_display > last_leg["arr"]:
+        route_col, handoff_col = st.columns([2, 1])
+
+        with route_col:
+            parts = [
+                "<div class='timeline'>",
+                "<div class='timeline-item'>",
+                "<div class='timeline-title'>Truck routes</div>",
+                "</div>",
+            ]
+            for i, leg in enumerate(steps, start=1):
+                from_name = display_name_for(leg['from'], code_to_name)
+                to_name   = display_name_for(leg['to'], code_to_name)
+                dep_txt   = leg["dep"].strftime("%a %b %d, %Y %I:%M %p")
+                arr_txt   = leg["arr"].strftime("%a %b %d, %Y %I:%M %p")
                 parts.append(
                     f"<div class='timeline-item'>"
-                    f"<div class='timeline-title'>Ready for pickup</div>"
-                    f"<div class='timeline-meta'>{display_br(dest)} — {display_name_for(dest, code_to_name)} at {eta_display.strftime('%a %b %d, %Y %I:%M %p')}</div>"
+                    f"<div class='timeline-meta'>Depart {display_br(leg['from'])} — {from_name} at {dep_txt}</div>"
+                    f"<div class='timeline-meta'>Arrive {display_br(leg['to'])} — {to_name} at {arr_txt}</div>"
                     f"</div>"
                 )
-        except Exception:
-            pass
-        parts.append("</div>")
-        st.markdown("".join(parts), unsafe_allow_html=True)
+            try:
+                last_leg = steps[-1]
+                if eta_display and eta_display > last_leg["arr"]:
+                    parts.append(
+                        f"<div class='timeline-item'>"
+                        f"<div class='timeline-title'>Ready for pickup</div>"
+                        f"<div class='timeline-meta'>{display_br(dest)} — {display_name_for(dest, code_to_name)} at {eta_display.strftime('%a %b %d, %Y %I:%M %p')}</div>"
+                        f"</div>"
+                    )
+            except Exception:
+                pass
+            parts.append("</div>")
+            st.markdown("".join(parts), unsafe_allow_html=True)
+
+        with handoff_col:
+            handoff_parts = [
+                "<div class='timeline'>",
+                "<div class='timeline-item'>",
+                "<div class='timeline-title'>Handoff summary</div>",
+                "</div>",
+            ]
+
+            # Start with the supplier branch and the time the part leaves.
+            first_leg = steps[0]
+            origin_departure_txt = first_leg["dep"].strftime("%a %b %d, %Y %I:%M %p")
+            handoff_parts.append(
+                f"<div class='timeline-item'>"
+                f"<div class='timeline-title'>{display_br(first_leg['from'])} — {display_name_for(first_leg['from'], code_to_name)}</div>"
+                f"<div class='timeline-meta'>Leaves: {origin_departure_txt}</div>"
+                f"</div>"
+            )
+
+            # Add only the places where the part switches from one truck/trip to another.
+            for i in range(len(steps) - 1):
+                current_leg = steps[i]
+                next_leg = steps[i + 1]
+
+                current_method = (current_leg.get("method") or "").strip().upper()
+                next_method = (next_leg.get("method") or "").strip().upper()
+
+                same_stop = current_leg.get("to") == next_leg.get("from")
+                trip_changed = current_leg.get("trip_id") != next_leg.get("trip_id")
+                method_changed = current_method != next_method
+
+                if same_stop and (trip_changed or method_changed):
+                    stop_code = current_leg["to"]
+                    stop_name = display_name_for(stop_code, code_to_name)
+                    arrival_txt = current_leg["arr"].strftime("%a %b %d, %Y %I:%M %p")
+
+                    handoff_parts.append(
+                        f"<div class='timeline-item'>"
+                        f"<div class='timeline-title'>{display_br(stop_code)} — {stop_name}</div>"
+                        f"<div class='timeline-meta'>Arrives: {arrival_txt}</div>"
+                        f"</div>"
+                    )
+
+            # End with the receiving branch and the shown ETA/ready time.
+            final_arrival_dt = eta_display or steps[-1]["arr"]
+            final_arrival_txt = final_arrival_dt.strftime("%a %b %d, %Y %I:%M %p")
+            handoff_parts.append(
+                f"<div class='timeline-item'>"
+                f"<div class='timeline-title'>{display_br(dest)} — {display_name_for(dest, code_to_name)}</div>"
+                f"<div class='timeline-meta'>Arrives: {final_arrival_txt}</div>"
+                f"</div>"
+            )
+
+            handoff_parts.append("</div>")
+            st.markdown("".join(handoff_parts), unsafe_allow_html=True)
 
     # --- Custom order date/time chooser ---
     if st.session_state.get("show_custom_dt_open", False):
