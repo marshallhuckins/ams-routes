@@ -49,9 +49,6 @@ BR30_BR60_NT_GATEWAY_METHOD = "NT"
 BR60_BR30_NT_GATEWAY_STOP = "BR81"
 BR60_BR30_NT_GATEWAY_METHOD = "NT"
 BR60_BR30_NT_GATEWAY_TRIP_ID = "60_30_NT_MEETUP"
-BR60_BR30_SM_GATEWAY_METHOD = "SM"
-BR60_BR30_NT_WINDOW_START = time(11, 15)
-BR60_BR30_NT_WINDOW_END = time(17, 15)
 
 # Branch equivalents: these are separate branch codes, but they route like the same physical location.
 # Keep the keys/values in canonical format with no leading zero, like BR1 instead of BR01.
@@ -1557,67 +1554,6 @@ eta, steps = earliest_arrival(
 )
 
 
-# BR60 cutoff rule for BR30-serviced branches.
-# If the order is between 11:15 AM and 5:15 PM, use the BR81 NT meetup.
-# Otherwise, use the normal SM route through BR30.
-if steps and origin_node == "BR60" and (dest_node == "BR30" or _passes_through(steps, "BR30")):
-    order_t = start_dt.time()
-    force_br60_method = BR60_BR30_NT_GATEWAY_METHOD if (
-        BR60_BR30_NT_WINDOW_START <= order_t < BR60_BR30_NT_WINDOW_END
-    ) else BR60_BR30_SM_GATEWAY_METHOD
-
-    approved_nt_meetup_trip_ids = set()
-    if force_br60_method == BR60_BR30_NT_GATEWAY_METHOD:
-        for leg in abs_legs:
-            trip_id_text = str(leg.get("trip_id") or "").strip().upper()
-            method_text = (leg.get("method") or "").strip().upper()
-            is_nt_meetup_trip = (
-                method_text == BR60_BR30_NT_GATEWAY_METHOD
-                or "NT" in trip_id_text
-                or "NIGHT" in trip_id_text
-                or trip_id_text == BR60_BR30_NT_GATEWAY_TRIP_ID.upper()
-            )
-            if leg.get("from") == "BR60" and leg.get("to") == BR60_BR30_NT_GATEWAY_STOP and is_nt_meetup_trip:
-                approved_nt_meetup_trip_ids.add(leg.get("trip_id"))
-
-    abs_legs_br60_cutoff = []
-    for leg in abs_legs:
-        if leg.get("from") != "BR60":
-            abs_legs_br60_cutoff.append(leg)
-            continue
-
-        method_text = (leg.get("method") or "").strip().upper()
-
-        if force_br60_method == BR60_BR30_SM_GATEWAY_METHOD:
-            if method_text == BR60_BR30_SM_GATEWAY_METHOD:
-                abs_legs_br60_cutoff.append(leg)
-        elif leg.get("trip_id") in approved_nt_meetup_trip_ids:
-            abs_legs_br60_cutoff.append(leg)
-
-    eta2, steps2 = earliest_arrival(
-        origin_node,
-        dest_node,
-        routing_start_dt,
-        abs_legs_br60_cutoff,
-        transfer_sec=MIN_TRANSFER_SECONDS,
-    )
-
-    if not eta2 or not steps2:
-        if force_br60_method == BR60_BR30_SM_GATEWAY_METHOD:
-            st.error(
-                "BR60 freight going through BR30 should use SM for this order time, "
-                "but no feasible SM route was found within the lookahead window. "
-                "Check RouteSchedule.xlsx for a BR60 SM route that connects through BR30 on the correct day(s)."
-            )
-        else:
-            st.error(
-                "BR60 freight going through BR30 should use NT for this order time, "
-                "but no feasible NT route through the BR81 meetup was found within the lookahead window. "
-                "Check RouteSchedule.xlsx for the 60_30_NT_MEETUP route and its BR81 connection on the correct day(s)."
-            )
-        st.stop()
-
-    eta, steps = eta2, steps2
 
 if steps and any(l.get("from") == "BR30" for l in steps) and _touches_before(steps, "BR30", ("BR60", "BR83")):
     # Allow either the old LM gateway through BR34 or the new NT gateway through BR81.
