@@ -1542,7 +1542,8 @@ eta, steps = earliest_arrival(
     transfer_sec=MIN_TRANSFER_SECONDS,
 )
 
- # If BR60 freight is going into the BR30 network, force it through the approved BR81 NT meetup.
+#
+# If BR60 freight is going into the BR30 network, force it through the approved BR81 NT meetup.
 if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
     allowed_trip_ids = set()
 
@@ -1550,25 +1551,26 @@ if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
         if leg.get("from") != "BR60":
             continue
 
-        tid = leg.get("trip_id")
+        tid = str(leg.get("trip_id") or "")
         method = _m(leg)
+        looks_like_nt_trip = "NT" in tid.upper() or "NIGHT" in tid.upper()
 
-        if method == BR60_BR30_NT_GATEWAY_METHOD:
+        if method == BR60_BR30_NT_GATEWAY_METHOD or looks_like_nt_trip:
             if any(
-                other_leg.get("trip_id") == tid
+                other_leg.get("trip_id") == leg.get("trip_id")
                 and (
                     other_leg.get("from") == BR60_BR30_NT_GATEWAY_STOP
                     or other_leg.get("to") == BR60_BR30_NT_GATEWAY_STOP
                 )
                 for other_leg in abs_legs
             ):
-                allowed_trip_ids.add(tid)
+                allowed_trip_ids.add(leg.get("trip_id"))
 
     if not allowed_trip_ids:
         st.error(
             "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
             "but no approved BR60→BR81 gateway trip was found in the current schedule window. "
-            "Check RouteSchedule.xlsx for a BR60 NT trip that reaches BR81 on the appropriate day(s)/time(s)."
+            "Check RouteSchedule.xlsx for a BR60 trip that reaches BR81 with Method set to NT, or a trip ID containing NT/Night, on the appropriate day(s)/time(s)."
         )
         st.stop()
 
