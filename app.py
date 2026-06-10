@@ -1545,57 +1545,53 @@ eta, steps = earliest_arrival(
 #
 # If BR60 freight is going into the BR30 network, force it through the approved BR81 NT meetup.
 if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
-    allowed_trip_ids = set()
+    gateway_stop = BR60_BR30_NT_GATEWAY_STOP
 
-    for leg in abs_legs:
-        if leg.get("from") != "BR60":
-            continue
-
-        tid = str(leg.get("trip_id") or "")
-        method = _m(leg)
-        looks_like_nt_trip = "NT" in tid.upper() or "NIGHT" in tid.upper()
-
-        if method == BR60_BR30_NT_GATEWAY_METHOD or looks_like_nt_trip:
-            if any(
-                other_leg.get("trip_id") == leg.get("trip_id")
-                and (
-                    other_leg.get("from") == BR60_BR30_NT_GATEWAY_STOP
-                    or other_leg.get("to") == BR60_BR30_NT_GATEWAY_STOP
-                )
-                for other_leg in abs_legs
-            ):
-                allowed_trip_ids.add(leg.get("trip_id"))
-
-    if not allowed_trip_ids:
-        st.error(
-            "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
-            "but no approved BR60→BR81 gateway trip was found in the current schedule window. "
-            "Check RouteSchedule.xlsx for a BR60 trip that reaches BR81 with Method set to NT, or a trip ID containing NT/Night, on the appropriate day(s)/time(s)."
-        )
-        st.stop()
-
-    abs_legs_gateway = [
-        leg for leg in abs_legs
-        if not (leg.get("from") == "BR60" and leg.get("trip_id") not in allowed_trip_ids)
-    ]
-
-    eta2, steps2 = earliest_arrival(
+    eta_to_gateway, steps_to_gateway = earliest_arrival(
         origin_node,
-        dest_node,
+        gateway_stop,
         routing_start_dt,
-        abs_legs_gateway,
+        abs_legs,
         transfer_sec=MIN_TRANSFER_SECONDS,
     )
 
-    if not eta2 or not steps2:
+    if not eta_to_gateway or not steps_to_gateway:
         st.error(
-            "BR60→BR30-network freight found an approved BR81 meetup trip, "
-            "but no feasible route was found from that gateway to the destination within the lookahead window. "
-            "Double-check that the BR60→BR81 meetup connects with the BR30 route on the correct day(s)."
+            "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
+            "but no route from BR60 to BR81 was found in the current schedule window. "
+            "Check RouteSchedule.xlsx for the 60_30_NT_MEETUP route and make sure it reaches BR81 on the appropriate day(s)/time(s)."
         )
         st.stop()
 
-    eta, steps = eta2, steps2
+    first_gateway_method = (steps_to_gateway[0].get("method") or "").strip().upper()
+    first_gateway_trip = str(steps_to_gateway[0].get("trip_id") or "")
+    gateway_looks_like_nt = "NT" in first_gateway_trip.upper() or "NIGHT" in first_gateway_trip.upper()
+
+    if first_gateway_method != BR60_BR30_NT_GATEWAY_METHOD and not gateway_looks_like_nt:
+        st.error(
+            "BR60→BR30-network freight found a path to BR81, but it was not an approved NT meetup route. "
+            "Check RouteSchedule.xlsx and make sure the BR60→BR81 meetup has Method set to NT or a trip ID containing NT/Night."
+        )
+        st.stop()
+
+    eta_from_gateway, steps_from_gateway = earliest_arrival(
+        gateway_stop,
+        dest_node,
+        eta_to_gateway,
+        abs_legs,
+        transfer_sec=MIN_TRANSFER_SECONDS,
+    )
+
+    if not eta_from_gateway or not steps_from_gateway:
+        st.error(
+            "BR60→BR30-network freight reached the BR81 meetup, "
+            "but no feasible route was found from BR81 to the destination within the lookahead window. "
+            "Double-check that the BR60→BR81 meetup connects with the BR30 night route on the correct day(s)."
+        )
+        st.stop()
+
+    eta = eta_from_gateway
+    steps = steps_to_gateway + steps_from_gateway
 
 # If the normal route goes through BR30 before BR60/BR83, rerun it with the gateway rule enforced.
 if steps and any(l.get("from") == "BR30" for l in steps) and _touches_before(steps, "BR30", ("BR60", "BR83")):
