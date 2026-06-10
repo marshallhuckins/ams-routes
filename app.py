@@ -48,6 +48,7 @@ BR30_BR60_LM_GATEWAY_METHOD = "LM"
 BR30_BR60_NT_GATEWAY_METHOD = "NT"
 BR60_BR30_NT_GATEWAY_STOP = "BR81"
 BR60_BR30_NT_GATEWAY_METHOD = "NT"
+BR60_BR30_NT_GATEWAY_TRIP_ID = "60_30_NT_MEETUP"
 
 # Branch equivalents: these are separate branch codes, but they route like the same physical location.
 # Keep the keys/values in canonical format with no leading zero, like BR1 instead of BR01.
@@ -1547,26 +1548,16 @@ eta, steps = earliest_arrival(
 if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
     gateway_stop = BR60_BR30_NT_GATEWAY_STOP
 
-    # For the BR60 side of the meetup, only allow the actual direct BR60→BR81 gateway leg.
-    # Without this, the app may find a different BR60 NT route that eventually reaches the BR30 network.
+    # For the BR60 side of the meetup, only allow the specific approved meetup trip.
+    # This prevents older BR60 night routes from being chosen while still letting the trip reach BR81.
     abs_legs_to_gateway = []
     for leg in abs_legs:
-        if leg.get("from") != "BR60":
-            continue
-
-        trip_id_text = str(leg.get("trip_id") or "").upper()
+        trip_id_text = str(leg.get("trip_id") or "").strip().upper()
         method_text = (leg.get("method") or "").strip().upper()
-        is_direct_gateway_leg = leg.get("to") == gateway_stop
-        is_approved_br60_gateway_departure = (
-            is_direct_gateway_leg
-            and (
-                method_text == BR60_BR30_NT_GATEWAY_METHOD
-                or "NT" in trip_id_text
-                or "NIGHT" in trip_id_text
-            )
-        )
+        is_approved_meetup_trip = trip_id_text == BR60_BR30_NT_GATEWAY_TRIP_ID.upper()
+        is_nt_meetup_trip = method_text == BR60_BR30_NT_GATEWAY_METHOD or "NT" in trip_id_text or "NIGHT" in trip_id_text
 
-        if is_approved_br60_gateway_departure:
+        if is_approved_meetup_trip and is_nt_meetup_trip:
             abs_legs_to_gateway.append(leg)
 
     eta_to_gateway, steps_to_gateway = earliest_arrival(
@@ -1581,7 +1572,7 @@ if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
         st.error(
             "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
             "but no approved route from BR60 to BR81 was found in the current schedule window. "
-            "Check RouteSchedule.xlsx for the 60_30_NT_MEETUP route and make sure it has a direct BR60→BR81 leg on the appropriate day(s)/time(s)."
+            "Check RouteSchedule.xlsx for the 60_30_NT_MEETUP route and make sure that trip reaches BR81 on the appropriate day(s)/time(s)."
         )
         st.stop()
 
