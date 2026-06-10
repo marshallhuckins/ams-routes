@@ -37,10 +37,14 @@ DAY_METHODS = {"SM", "EM", "LM", "SHU"}        # daytime route methods
 INTERNAL_STOP_PREFIXES = ("BRM_", "MEET_")      # transfer-only stops hidden from dropdowns
 
 # BR30 gateway rule:
-# Freight from BR30 that is going into the BR60/BR83 network should leave BR30 on the LM shuttle
-# to BR34, where it meets BR60. It should not ride the BR30→BR51 night truck.
-BR30_BR60_GATEWAY_STOP = "BR34"
-BR30_BR60_GATEWAY_METHOD = "LM"
+# Freight from BR30 going into the BR60/BR83 network can use either:
+# - the LM shuttle through BR34
+# - the BR30 night truck that meets BR60 at BR81
+# This keeps BR30 from using unrelated night routes while allowing the new BR81 meetup.
+BR30_BR60_LM_GATEWAY_STOP = "BR34"
+BR30_BR60_NT_GATEWAY_STOP = "BR81"
+BR30_BR60_LM_GATEWAY_METHOD = "LM"
+BR30_BR60_NT_GATEWAY_METHOD = "NT"
 
 # Branch equivalents: these are separate branch codes, but they route like the same physical location.
 # Keep the keys/values in canonical format with no leading zero, like BR1 instead of BR01.
@@ -51,6 +55,7 @@ BR_EQUIV = {
     "BR48": "BR34",
     "BR44": "BR43",
     "BR91": "BR43",
+    "BR93": "BR80",
 }
 
 # ---------- Helper functions ----------
@@ -1495,8 +1500,10 @@ abs_legs = expand_connections(conns, routing_start_dt)
 
 
 # --- BR30 gateway rule ---
-# If freight is going from BR30 into the BR60/BR83 network, force it through the LM shuttle to BR34.
-# This prevents the app from choosing the BR30→BR51 night truck for those routes.
+# Freight from BR30 into the BR60/BR83 network must use one of the approved gateway paths:
+# - LM through BR34
+# - NT through BR81 for the new BR30/BR60 night meetup
+# This prevents the app from choosing unrelated BR30 night routes while allowing the approved BR81 meetup.
 
 def _m(x):
     return (x.get("method") or "").strip().upper()
@@ -1534,32 +1541,46 @@ eta, steps = earliest_arrival(
 
 # If the normal route goes through BR30 before BR60/BR83, rerun it with the gateway rule enforced.
 if steps and any(l.get("from") == "BR30" for l in steps) and _touches_before(steps, "BR30", ("BR60", "BR83")):
-    gateway_stop = BR30_BR60_GATEWAY_STOP        # BR34
-    gateway_method = BR30_BR60_GATEWAY_METHOD    # LM
-
-    # The LM shuttle may not be a direct BR30→BR34 leg.
-    # Allow LM/blank-method trips that leave BR30 and touch BR34 somewhere in the same trip.
-
-    # Candidate trips leave BR30 using the gateway method, or have a blank method.
-    candidate_trip_ids = set()
-    for leg in abs_legs:
-        if leg.get("from") == "BR30":
-            if _m(leg) == gateway_method or _is_blank_method(leg):
-                candidate_trip_ids.add(leg.get("trip_id"))
-
-    # Allowed trips also have to touch the gateway stop.
+    # Allow either the old LM gateway through BR34 or the new NT gateway through BR81.
     allowed_trip_ids = set()
+
     for leg in abs_legs:
+        if leg.get("from") != "BR30":
+            continue
+
         tid = leg.get("trip_id")
-        if tid in candidate_trip_ids and (leg.get("from") == gateway_stop or leg.get("to") == gateway_stop):
-            allowed_trip_ids.add(tid)
+        method = _m(leg)
+
+        # Old allowed path: BR30 LM/blank-method trip that touches BR34.
+        if method == BR30_BR60_LM_GATEWAY_METHOD or _is_blank_method(leg):
+            if any(
+                other_leg.get("trip_id") == tid
+                and (
+                    other_leg.get("from") == BR30_BR60_LM_GATEWAY_STOP
+                    or other_leg.get("to") == BR30_BR60_LM_GATEWAY_STOP
+                )
+                for other_leg in abs_legs
+            ):
+                allowed_trip_ids.add(tid)
+
+        # New allowed path: BR30 NT trip that touches BR81.
+        if method == BR30_BR60_NT_GATEWAY_METHOD:
+            if any(
+                other_leg.get("trip_id") == tid
+                and (
+                    other_leg.get("from") == BR30_BR60_NT_GATEWAY_STOP
+                    or other_leg.get("to") == BR30_BR60_NT_GATEWAY_STOP
+                )
+                for other_leg in abs_legs
+            ):
+                allowed_trip_ids.add(tid)
 
     # If no gateway shuttle is found, stop with a clear schedule-data message.
     if not allowed_trip_ids:
         st.error(
-            "BR30→BR60/BR83 freight must leave BR30 on the LM shuttle that meets BR60 at BR34, "
-            "but no LM shuttle trip departing BR30 that reaches BR34 was found in the current schedule window. "
-            "Check RouteSchedule.xlsx for a BR30 LM trip that runs BR30→…→BR34 on the appropriate day(s)/time(s)."
+            "BR30→BR60/BR83 freight must leave BR30 on either the LM shuttle through BR34 or the NT route through BR81, "
+            "but no approved gateway trip was found in the current schedule window. "
+            "Check RouteSchedule.xlsx for either a BR30 LM trip that reaches BR34 or a BR30 NT trip that reaches BR81 on the appropriate day(s)/time(s)."
         )
         st.stop()
 
@@ -1579,9 +1600,9 @@ if steps and any(l.get("from") == "BR30" for l in steps) and _touches_before(ste
 
     if not eta2 or not steps2:
         st.error(
-            "BR30→BR60/BR83 freight must leave BR30 on the LM shuttle that meets BR60 at BR34, "
-            "but no feasible route was found under that rule within the lookahead window. "
-            "Double-check that the BR30 LM shuttle connects onward to BR60 (and then to your destination) on the correct days."
+            "BR30→BR60/BR83 freight found an approved gateway trip, "
+            "but no feasible route was found from that gateway to the destination within the lookahead window. "
+            "Double-check that the BR30 gateway route connects onward to BR60, and then to the final destination, on the correct day(s)."
         )
         st.stop()
 
@@ -1652,10 +1673,20 @@ else:
                 method_code = "SHU"
                 preferred_overnight_method = None
 
-            # BR30 routes that pass through BR60 should be ordered as LM.
+            
+            # BR30 routes that pass through BR60 should show the method from the actual BR30 departure.
+            # Older BR30→BR60 routes use LM through BR34, while the new BR81 meetup uses NT.
             if origin_node == "BR30" and passes_through_br60:
-                method_code = "LM"
-                preferred_overnight_method = None
+                br30_origin_legs = [leg for leg in steps if leg.get("from") == "BR30"]
+                br30_first_method = ""
+                if br30_origin_legs:
+                    br30_first_method = (br30_origin_legs[0].get("method") or "").strip().upper()
+
+                if br30_first_method:
+                    method_code = br30_first_method
+
+                if method_code != "NT":
+                    preferred_overnight_method = None
 
             # Save the base method now; finalize it after the overnight message is known.
             delivery_hint = {
