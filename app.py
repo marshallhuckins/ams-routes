@@ -625,8 +625,9 @@ def read_all_connections(xlsx_path):
         if df.empty: 
             continue
         df = normalize_columns(df)
-        # Use the sheet name as the trip id when Trip_ID is blank.
-        df["Trip_ID"] = df["Trip_ID"].fillna(sheet).replace("", sheet)
+        # Some workbook sheets only list the Trip_ID once at the start of a route block.
+        # Forward-fill it so the remaining stops stay grouped under the same trip.
+        df["Trip_ID"] = df["Trip_ID"].replace(r"^\s*$", pd.NA, regex=True).ffill().fillna(sheet)
 
         # Parse times, stop order, and active days.
         df["dep_s"]  = df["Departure_Time"].apply(parse_hhmm)
@@ -1548,17 +1549,25 @@ eta, steps = earliest_arrival(
 if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
     gateway_stop = BR60_BR30_NT_GATEWAY_STOP
 
-    # For the BR60 side of the meetup, only allow the specific approved meetup trip.
-    # This prevents older BR60 night routes from being chosen while still letting the trip reach BR81.
-    abs_legs_to_gateway = []
+    # For the BR60 side of the meetup, approve whichever trip actually contains BR60→BR81.
+    # This is more reliable than depending only on the typed Trip_ID text from the workbook.
+    approved_meetup_trip_ids = set()
     for leg in abs_legs:
         trip_id_text = str(leg.get("trip_id") or "").strip().upper()
         method_text = (leg.get("method") or "").strip().upper()
-        is_approved_meetup_trip = trip_id_text == BR60_BR30_NT_GATEWAY_TRIP_ID.upper()
-        is_nt_meetup_trip = method_text == BR60_BR30_NT_GATEWAY_METHOD or "NT" in trip_id_text or "NIGHT" in trip_id_text
+        is_nt_meetup_trip = (
+            method_text == BR60_BR30_NT_GATEWAY_METHOD
+            or "NT" in trip_id_text
+            or "NIGHT" in trip_id_text
+            or trip_id_text == BR60_BR30_NT_GATEWAY_TRIP_ID.upper()
+        )
+        if leg.get("from") == "BR60" and leg.get("to") == gateway_stop and is_nt_meetup_trip:
+            approved_meetup_trip_ids.add(leg.get("trip_id"))
 
-        if is_approved_meetup_trip and is_nt_meetup_trip:
-            abs_legs_to_gateway.append(leg)
+    abs_legs_to_gateway = [
+        leg for leg in abs_legs
+        if leg.get("trip_id") in approved_meetup_trip_ids
+    ]
 
     eta_to_gateway, steps_to_gateway = earliest_arrival(
         origin_node,
@@ -1572,7 +1581,7 @@ if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
         st.error(
             "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
             "but no approved route from BR60 to BR81 was found in the current schedule window. "
-            "Check RouteSchedule.xlsx for the 60_30_NT_MEETUP route and make sure that trip reaches BR81 on the appropriate day(s)/time(s)."
+            "Check RouteSchedule.xlsx for a BR60→BR81 leg on the 60_30_NT_MEETUP route, with Method set to NT, on the appropriate day(s)/time(s)."
         )
         st.stop()
 
