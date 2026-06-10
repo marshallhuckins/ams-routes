@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, time
@@ -614,7 +615,7 @@ def days_active_to_set(s):
     return out
 
 @st.cache_data(show_spinner=False)
-def read_all_connections(xlsx_path):
+def read_all_connections(xlsx_path, file_mtime=None):
     """Read the route workbook and turn each trip into route legs the app can search."""
     xls = pd.ExcelFile(xlsx_path)
     connections = []  # each item is one searchable route leg
@@ -1336,7 +1337,8 @@ require_allowed_google_account()
 
 # Load the route schedule and branch directory.
 try:
-    conns, stops = read_all_connections(DATA_XLSX)
+    schedule_mtime = os.path.getmtime(DATA_XLSX)
+    conns, stops = read_all_connections(DATA_XLSX, schedule_mtime)
 
     # Load branch names, aliases, and closing times.
     code_to_name, alias_index, close_times = load_stores(STORES_CSV)
