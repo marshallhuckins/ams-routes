@@ -1672,9 +1672,10 @@ else:
         method_code = (first_leg.get("method") or "").strip().upper()
 
         if method_code:
-            # For true overnight deliveries, recommend NT if the chosen path includes an NT leg.
+            # For true overnight deliveries, only prefer NT when the first origin leg is NT.
+            # If BR60 leaves on SM and later connects to an NT leg, the store should still submit as SM.
             step_methods = [(l.get("method") or "").strip().upper() for l in steps]
-            if any(m == "NT" for m in step_methods):
+            if method_code == "NT":
                 # Final overnight check happens after overnight_msg is calculated.
                 preferred_overnight_method = "NT"
             else:
