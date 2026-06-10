@@ -1542,35 +1542,43 @@ eta, steps = earliest_arrival(
     transfer_sec=MIN_TRANSFER_SECONDS,
 )
 
-#
-# If BR60 freight is going into the BR30 network, force it through the approved BR81 NT meetup.
+
+# Reverse BR60 gateway: force BR60→BR30-network freight through the BR81 NT meetup route.
 if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
     gateway_stop = BR60_BR30_NT_GATEWAY_STOP
+
+    # For the BR60 side of the meetup, only allow BR60 departures that look like the approved NT route.
+    # Without this, the app may find an older/faster non-NT path to BR81 and reject it.
+    abs_legs_to_gateway = []
+    for leg in abs_legs:
+        if leg.get("from") != "BR60":
+            abs_legs_to_gateway.append(leg)
+            continue
+
+        trip_id_text = str(leg.get("trip_id") or "").upper()
+        method_text = (leg.get("method") or "").strip().upper()
+        is_approved_br60_gateway_departure = (
+            method_text == BR60_BR30_NT_GATEWAY_METHOD
+            or "NT" in trip_id_text
+            or "NIGHT" in trip_id_text
+        )
+
+        if is_approved_br60_gateway_departure:
+            abs_legs_to_gateway.append(leg)
 
     eta_to_gateway, steps_to_gateway = earliest_arrival(
         origin_node,
         gateway_stop,
         routing_start_dt,
-        abs_legs,
+        abs_legs_to_gateway,
         transfer_sec=MIN_TRANSFER_SECONDS,
     )
 
     if not eta_to_gateway or not steps_to_gateway:
         st.error(
             "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
-            "but no route from BR60 to BR81 was found in the current schedule window. "
+            "but no approved route from BR60 to BR81 was found in the current schedule window. "
             "Check RouteSchedule.xlsx for the 60_30_NT_MEETUP route and make sure it reaches BR81 on the appropriate day(s)/time(s)."
-        )
-        st.stop()
-
-    first_gateway_method = (steps_to_gateway[0].get("method") or "").strip().upper()
-    first_gateway_trip = str(steps_to_gateway[0].get("trip_id") or "")
-    gateway_looks_like_nt = "NT" in first_gateway_trip.upper() or "NIGHT" in first_gateway_trip.upper()
-
-    if first_gateway_method != BR60_BR30_NT_GATEWAY_METHOD and not gateway_looks_like_nt:
-        st.error(
-            "BR60→BR30-network freight found a path to BR81, but it was not an approved NT meetup route. "
-            "Check RouteSchedule.xlsx and make sure the BR60→BR81 meetup has Method set to NT or a trip ID containing NT/Night."
         )
         st.stop()
 
@@ -1593,7 +1601,6 @@ if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
     eta = eta_from_gateway
     steps = steps_to_gateway + steps_from_gateway
 
-# If the normal route goes through BR30 before BR60/BR83, rerun it with the gateway rule enforced.
 if steps and any(l.get("from") == "BR30" for l in steps) and _touches_before(steps, "BR30", ("BR60", "BR83")):
     # Allow either the old LM gateway through BR34 or the new NT gateway through BR81.
     allowed_trip_ids = set()
