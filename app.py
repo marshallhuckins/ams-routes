@@ -1526,6 +1526,7 @@ def _first_touch_index(nodes_steps, node_code: str):
             return i
     return None
 
+
 def _touches_before(nodes_steps, first: str, later_nodes: tuple[str, ...]) -> bool:
     """Return True when one node is reached before any of the later nodes."""
     i_first = _first_touch_index(nodes_steps, first)
@@ -1534,6 +1535,14 @@ def _touches_before(nodes_steps, first: str, later_nodes: tuple[str, ...]) -> bo
     idxs = [_first_touch_index(nodes_steps, n) for n in later_nodes]
     idxs = [i for i in idxs if i is not None]
     return bool(idxs) and i_first < min(idxs)
+
+
+def _has_direct_leg(nodes_steps, from_node: str, to_node: str) -> bool:
+    """Return True when the selected route includes a direct leg between two nodes."""
+    return any(
+        l.get("from") == from_node and l.get("to") == to_node
+        for l in (nodes_steps or [])
+    )
 
 # First try the normal fastest route.
 eta, steps = earliest_arrival(
@@ -1545,9 +1554,16 @@ eta, steps = earliest_arrival(
 )
 
 
-# Reverse BR60 gateway: force BR60→BR30-network freight through the BR81 NT meetup route.
-# Do not apply this when BR30 itself is the destination; BR60→BR30 can still use the normal daytime SM route.
-if steps and origin_node == "BR60" and dest_node != "BR30" and _passes_through(steps, "BR30"):
+ # Reverse BR60 gateway: block the old roundabout BR60→BR30-side path when needed.
+# Do not apply this when the selected route already uses the direct BR60→BR30 leg;
+# that lets normal daytime SM freight from BR60 continue through BR30 to branches like BR24.
+if (
+    steps
+    and origin_node == "BR60"
+    and dest_node != "BR30"
+    and _passes_through(steps, "BR30")
+    and not _has_direct_leg(steps, "BR60", "BR30")
+):
     gateway_stop = BR60_BR30_NT_GATEWAY_STOP
 
     # For the BR60 side of the meetup, approve whichever trip actually contains BR60→BR81.
@@ -1580,7 +1596,7 @@ if steps and origin_node == "BR60" and dest_node != "BR30" and _passes_through(s
 
     if not eta_to_gateway or not steps_to_gateway:
         st.error(
-            "BR60→BR30-side freight must leave BR60 on the NT meetup route through BR81, "
+            "BR60→BR30-side freight cannot use the old roundabout route and must use either the direct BR60→BR30 route or the NT meetup through BR81, "
             "but no approved route from BR60 to BR81 was found in the current schedule window. "
             "Check RouteSchedule.xlsx for a BR60→BR81 leg on the 60_30_NT_MEETUP route, with Method set to NT, on the appropriate day(s)/time(s)."
         )
