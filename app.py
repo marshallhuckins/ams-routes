@@ -1546,7 +1546,8 @@ eta, steps = earliest_arrival(
 
 
 # Reverse BR60 gateway: force BR60→BR30-network freight through the BR81 NT meetup route.
-if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
+# Do not apply this when BR30 itself is the destination; BR60→BR30 can still use the normal daytime SM route.
+if steps and origin_node == "BR60" and dest_node != "BR30" and _passes_through(steps, "BR30"):
     gateway_stop = BR60_BR30_NT_GATEWAY_STOP
 
     # For the BR60 side of the meetup, approve whichever trip actually contains BR60→BR81.
@@ -1579,7 +1580,7 @@ if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
 
     if not eta_to_gateway or not steps_to_gateway:
         st.error(
-            "BR60→BR30-network freight must leave BR60 on the NT meetup route through BR81, "
+            "BR60→BR30-side freight must leave BR60 on the NT meetup route through BR81, "
             "but no approved route from BR60 to BR81 was found in the current schedule window. "
             "Check RouteSchedule.xlsx for a BR60→BR81 leg on the 60_30_NT_MEETUP route, with Method set to NT, on the appropriate day(s)/time(s)."
         )
@@ -1595,7 +1596,7 @@ if steps and origin_node == "BR60" and _passes_through(steps, "BR30"):
 
     if not eta_from_gateway or not steps_from_gateway:
         st.error(
-            "BR60→BR30-network freight reached the BR81 meetup, "
+            "BR60→BR30-side freight reached the BR81 meetup, "
             "but no feasible route was found from BR81 to the destination within the lookahead window. "
             "Double-check that the BR60→BR81 meetup connects with the BR30 night route on the correct day(s)."
         )
