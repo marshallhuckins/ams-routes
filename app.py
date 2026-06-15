@@ -815,11 +815,14 @@ def earliest_arrival(
             earliest_board = best[u] + timedelta(seconds=required_buffer)
             can_board = (earliest_board <= dep)
 
-            # For the first leg after a night/weekend order, enforce the earliest usable next-day truck.
+            # For true night orders, enforce the earliest usable next-day truck.
+            # Weekend/daytime orders should simply wait for the next available route, even if that route is on a later date.
             # Route-specific rules win over origin-wide rules.
             if can_board and u == origin:
                 try:
-                    if dep.date() > start_dt_local.date():
+                    is_future_day_departure = dep.date() > start_dt_local.date()
+                    is_night_order = start_dt_local.time() >= NIGHT_ORDER_CUTOFF
+                    if is_future_day_departure and is_night_order:
                         # Use route-specific cutoff first, then fall back to the origin-wide cutoff.
                         min_dep_time = ROUTE_NEXTDAY_MIN_DEP.get((origin, dest)) or ORIGIN_NEXTDAY_MIN_DEP.get(origin)
                         if min_dep_time and dep.time() < min_dep_time:
